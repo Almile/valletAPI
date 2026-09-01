@@ -2,115 +2,138 @@ from pydantic import BaseModel, Field,EmailStr
 from typing import Optional, Literal
 from datetime import datetime
 
+class FCMTokenUpdate(BaseModel):
+    fcm_token: str
+
 # --- USUÁRIO ---
 class UsuarioSchema(BaseModel):
     nome: str = Field(..., examples=["Luan Santana"])
     email: EmailStr = Field(..., examples=["luan@gmail.com"])
-    tipoUser: str = 'motorista'
-    cnh: str
-    foto_url: Optional[str] = 'path_imagem_padrao'
-    nomeEmpresa: Optional[str] = None
+    cnh: Optional[str] = None
+    tipo_user: str = Field("motorista", examples=["motorista"])
+    fotoPerfil: Optional[str] = 'path_imagem_padrao'
+    telefone: Optional[str] = None
     cargo: Optional[str] = None
+    fcm_token: Optional[str] = None
 
 class UsuarioCreate(UsuarioSchema):
-    senha: str = Field(..., examples=["senha123"])
-    role: str = Field("motorista", examples=["motorista"])
+    senha: str = Field(..., min_length=6, examples=["senha123"])
 
 class UsuarioUpdate(BaseModel):
     nome: Optional[str] = None
-    email: Optional[EmailStr] = None
     telefone: Optional[str] = None
-    senha: Optional[str] = None
-    foto_url: Optional[str] = None
-    nomeEmpresa: Optional[str] = None
+    cnh: Optional[str] = None
+    fotoPerfil: Optional[str] = None
     cargo: Optional[str] = None
 
+class UsuarioResponse(UsuarioSchema):
+    uid: str
+    data_criacao: Optional[datetime] = None
+    ultima_atualizacao_token: Optional[datetime] = None
+
 # --- VEICULO ---
-class VeiculoSchema(BaseModel):
-    id: Optional[str] = None
-    placa: str
+class VeiculoCreate(BaseModel):
+    placa: str = Field(..., examples=["ABC1D23"])
     marca: str
     modelo: str
-    apelido:Optional[str] = None
-    ano:int
-    km:float
-    tipo: Literal["Moto","Carro","Caminhão"]
+    apelido: Optional[str] = None
+    padrao: bool = False
+    ano: int
+    km: float = 0.0
+    tipo: Literal["Moto", "Carro", "Caminhão"]
+
+class VeiculoResponse(VeiculoCreate):
+    id: Optional[str] = None
+    usuarioId: str
     usuarioEmail: str
-    dataCadastro:datetime.datetime
+    dataCadastro: datetime
 
 # --- ESTACIONAMENTO ---
+
+class Endereco(BaseModel):
+    cep: str
+    logradouro: str
+    complemento: Optional[str] = ""
+    bairro: str
+    localidade: str
+    uf: str
 
 class EstacionamentoSchema(BaseModel):
     id: Optional[str] = None
     nome: str
     cnpj: str
     telefone: str = ""
-    adminUid: Optional[str] = None
-    adminEmail: str = ""
-    endereco: str = ""
-    cep: str = ""
+    adminUid: str
+    adminEmail: str
+    endereco: Optional[Endereco] = None
+    
+    # Capadidade e Vagas
     quantidadeVagasTotal: int = 1
     vagasDisponiveis: int = 1
+    quantidadeVagasComum: int = 0
+    quantidadeVagasIdosoPcd: int = 0
+
+    tiposVagasComum: bool = False
+    tiposVagasIdosoPcd: bool = False
+    possuiCobertura: bool = False
+    numeroPavimentos: int = 1
+
+    # Operação
     horarioAbertura: str = "08:00"
     horarioFechamento: str = "18:00"
     valorHora: float
-    tiposVagasComum: bool = 'false',
-    tiposVagasIdosoPcd: bool = 'false',
-    quantidadeVagasComum: int = 0
-    quantidadeVagasIdosoPcd: int = 0,
-    possuiCobertura: bool = 'false',
-    numeroPavimentos: int = 0
-    tempoMaxReservaHoras: float = 2
+    
+    # Regras de Reserva
+    tempoMaxReservaHoras: float = 2.0
     toleranciaReservaMinutos: int = 10
-    fotoEstacionamentoUri: str
-    distanciaMetros: int
+    
+    # Localização
+    fotoEstacionamentoUri: Optional[str] = None
+    distanciaMetros: Optional[int] = 0
     latitude: float
     longitude: float
 
-# --- ENDEREÇO ---
-
-class Endereco(BaseModel):
-    cep: str
-    logradouro: str
-    complemento: str
-    bairro: str
-    localidade: str
-    uf: str
 
 # --- VAGA ---
 
 class Vaga(BaseModel):
-    id: str = "",
-    numero: str = "",
-    localizacao: str = "",
-    preco: float = 0.0,
-    tipo: str = "",
-    preferencial: bool = 'false',
-    disponivel: bool = 'true',
-    estacionamentoId: str = ""
+    id: Optional[str] = None
+    numero: str
+    localizacao: str = ""
+    preco: float = 0.0
+    tipo: Literal["Comum", "IdosoPcd", "Moto"] = "Comum"
+    preferencial: bool = False
+    disponivel: bool = True
+    estacionamentoId: str
 
 # --- RESERVA ---
 
-class Reserva(BaseModel):
-    usuarioId: str
+class ReservaCreate(BaseModel):
     vagaId: str
+    estacionamentoId: str
     inicioReserva: datetime
     fimReserva: datetime
-    estacionamentoId : str
-    status: Literal['ativa','cancelada','concluida']
+
+class Reserva(ReservaCreate):
+    id: Optional[str] = None
+    usuarioId: str
+    status: Literal['ativa', 'cancelada', 'concluida'] = 'ativa'
+    dataCriacao: datetime
 
 # --- RESERVA_HISTORICO ---
 
-class ReservaHistorico:
-    vaga: str
-    data: str
-    horario: str
+class ReservaHistorico(BaseModel):
+    id: Optional[str] = None
+    reservaId: str
+    vagaId: str
     usuarioId: str
-    estacionamentoId : str
+    estacionamentoId: str
+    dataConclusao: datetime
 
 # --- ---------------- CAMERA - ML ------------------------
 
 class LeituraPlacaSchema(BaseModel):
-    placa: str = Field(..., example="ABC1D23")
-    camera_id: str = Field(..., example="CAM_ENTRADA_01")
-    estacionamentoId: str = Field(..., example="estacionamento_01")
+    placa: str = Field(..., examples=["ABC1D23"])
+    camera_id: str = Field(..., examples=["CAM_ENTRADA_01"])
+    estacionamentoId: str = Field(..., examples=["estacionamento_01"])
+    timestamp: datetime = Field(default_factory=datetime.now)

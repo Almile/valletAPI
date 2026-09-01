@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+serviceAccountKey.json
 # Virtual environments
 .venv/
 venv/
@@ -11,7 +12,6 @@ ambientevirtual/
 
 # Environment secrets (FastAPI configuration)
 .env
-.env.*
 
 # IDEs and Editors
 .vscode/
