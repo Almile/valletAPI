@@ -137,3 +137,12 @@ class LeituraPlacaSchema(BaseModel):
     camera_id: str = Field(..., examples=["CAM_ENTRADA_01"])
     estacionamentoId: str = Field(..., examples=["estacionamento_01"])
     timestamp: datetime = Field(default_factory=datetime.now)
+
+# --- ---------------- PAGAMENTO ------------------------
+
+class RequisicaoPagamento(BaseModel):
+    valor: float
+    metodo: str
+    numero_cartao: str | None = None
+    usuario_id: str | None = None
+    reserva_id: str  
