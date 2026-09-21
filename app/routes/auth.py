@@ -1,5 +1,5 @@
 import os
-import requests
+import httpx
 from fastapi import APIRouter, HTTPException, Depends, status
 from firebase_admin import auth, firestore
 from app.models.schemas import UsuarioCreate, FCMTokenUpdate
@@ -10,9 +10,9 @@ router = APIRouter()
 database = db
 
 @router.post("/login")
-def login(email: str, senha: str):
+async def login(email: str, senha: str):
     """
-    Realiza a autenticação de e-mail e senha utilizando a REST API do Firebase.
+    Realiza a autenticação de e-mail e senha utilizando a API do Firebase de forma assíncrona.
     """
     api_key = os.getenv("FIREBASE_WEB_API_KEY")
     if not api_key:
@@ -28,8 +28,15 @@ def login(email: str, senha: str):
         "returnSecureToken": True
     }
 
-    response = requests.post(url, json=payload)
-    data = response.json()
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(url, json=payload, timeout=10.0)
+            data = response.json()
+        except httpx.RequestError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Erro de conexão com o serviço de autenticação: {exc}"
+            )
 
     if response.status_code != 200:
         erro_msg = data.get("error", {}).get("message", "Erro ao autenticar.")
@@ -52,10 +59,34 @@ def login(email: str, senha: str):
     }
 
 @router.post("/criar_usuario", status_code=status.HTTP_201_CREATED)
-def criar_usuario(dados: UsuarioCreate):
+def criar_usuario(
+    dados: UsuarioCreate,
+    usuario_logado: dict = Depends(get_usuario_atual)
+):
     """
-    Cria um novo usuário no Firebase Auth e salva o perfil no Firestore.
+    Cria um novo usuário.
+    Se o novo usuário for um 'admin', exige que o criador seja 'superadmin'.
     """
+    solicitante_uid = usuario_logado.get("uid")
+
+    if dados.tipo_user in ["admin", "administrador"]:
+        solicitante_doc = database.collection("usuario").document(solicitante_uid).get()
+        
+        if not solicitante_doc.exists:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Usuário autenticado não encontrado no banco de dados."
+            )
+
+        dados_solicitante = solicitante_doc.to_dict()
+        tipo_solicitante = dados_solicitante.get("tipo_user")
+
+        if tipo_solicitante != "superadmin":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Voce não tem permissão para cadastrar novos administradores."
+            )
+
     try:
         dados_usuario = auth.create_user(
             email=dados.email,
@@ -82,7 +113,7 @@ def criar_usuario(dados: UsuarioCreate):
         return {
             "mensagem": "Usuário registrado com sucesso!",
             "uid": dados_usuario.uid,
-            "email": dados_usuario.email,
+            "email": dados.email,
             "nome": dados.nome,
             "tipo_user": dados.tipo_user
         }

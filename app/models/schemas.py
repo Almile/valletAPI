@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field,EmailStr
-from typing import Optional, Literal
+from typing import Optional, Literal, Union
 from datetime import datetime
 
 class FCMTokenUpdate(BaseModel):
@@ -49,50 +49,52 @@ class VeiculoResponse(VeiculoCreate):
     dataCadastro: datetime
 
 # --- ESTACIONAMENTO ---
-
 class Endereco(BaseModel):
-    cep: str
-    logradouro: str
+    cep: Optional[str] = ""
+    logradouro: Optional[str] = ""
     complemento: Optional[str] = ""
-    bairro: str
-    localidade: str
-    uf: str
+    bairro: Optional[str] = ""
+    localidade: Optional[str] = ""
+    uf: Optional[str] = ""
 
-class EstacionamentoSchema(BaseModel):
-    id: Optional[str] = None
+class EstacionamentoCreate(BaseModel):
     nome: str
     cnpj: str
-    telefone: str = ""
-    adminUid: str
-    adminEmail: str
-    endereco: Optional[Endereco] = None
+    telefone: Optional[str] = ""
     
-    # Capadidade e Vagas
-    quantidadeVagasTotal: int = 1
-    vagasDisponiveis: int = 1
-    quantidadeVagasComum: int = 0
-    quantidadeVagasIdosoPcd: int = 0
+    adminUid: str
+    
+    endereco: Optional[Union[Endereco, str]] = None
+    
+    quantidadeVagasTotal: Optional[int] = 1
+    vagasDisponiveis: Optional[int] = 1
+    quantidadeVagasComum: Optional[int] = 0
+    quantidadeVagasIdosoPcd: Optional[int] = 0
 
-    tiposVagasComum: bool = False
-    tiposVagasIdosoPcd: bool = False
-    possuiCobertura: bool = False
-    numeroPavimentos: int = 1
+    tiposVagasComum: Optional[bool] = False
+    tiposVagasIdosoPcd: Optional[bool] = False
+    possuiCobertura: Optional[bool] = False
+    numeroPavimentos: Optional[int] = 1
 
     # Operação
-    horarioAbertura: str = "08:00"
-    horarioFechamento: str = "18:00"
-    valorHora: float
+    horarioAbertura: Optional[str] = "08:00"
+    horarioFechamento: Optional[str] = "18:00"
+    valorHora: Optional[float] = 0.0
     
     # Regras de Reserva
-    tempoMaxReservaHoras: float = 2.0
-    toleranciaReservaMinutos: int = 10
+    tempoMaxReservaHoras: Optional[float] = 2.0
+    toleranciaReservaMinutos: Optional[int] = 10
     
     # Localização
     fotoEstacionamentoUri: Optional[str] = None
     distanciaMetros: Optional[int] = 0
-    latitude: float
-    longitude: float
+    latitude: Optional[float] = 0.0
+    longitude: Optional[float] = 0.0
 
+
+class EstacionamentoSchema(EstacionamentoCreate):
+    id: Optional[str] = None
+    adminEmail: Optional[str] = None
 
 # --- VAGA ---
 
