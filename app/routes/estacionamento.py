@@ -57,6 +57,48 @@ def criar_estacionamento(
             detail=f"Erro ao criar estacionamento: {str(e)}"
         )
 
+@router.get("/buscar_estacionamento/{estacionamento_id}", response_model=EstacionamentoSchema)
+def buscar_estacionamento_por_id(
+    estacionamento_id: str,
+    usuario_logado: dict = Depends(get_usuario_atual)
+):
+    """
+    Busca os detalhes de um estacionamento específico pelo ID.
+    Valida se o usuário logado tem acesso (superadmin ou o próprio admin do estacionamento).
+    """
+    try:
+        uid = usuario_logado.get("uid")
+
+        user_doc = database.collection("usuario").document(uid).get()
+        tipo_user = user_doc.to_dict().get("tipo_user") if user_doc.exists else "motorista"
+
+        estacionamento_ref = database.collection("estacionamento").document(estacionamento_id)
+        doc = estacionamento_ref.get()
+
+        if not doc.exists:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Estacionamento não encontrado."
+            )
+
+        dados = doc.to_dict()
+        dados["id"] = doc.id
+
+        if tipo_user != "superadmin" and dados.get("adminUid") != uid:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Você não tem permissão para visualizar os detalhes deste estacionamento."
+            )
+
+        return EstacionamentoSchema(**dados)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro ao buscar estacionamento: {str(e)}"
+        )
 
 @router.get("/listar_estacionamentos_usuario", response_model=list[EstacionamentoSchema])
 def listar_estacionamentos(usuario_logado: dict = Depends(get_usuario_atual)):

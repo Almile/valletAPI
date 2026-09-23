@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from app.routes import auth,usuarios, estacionamento, veiculo, pagamento, admin,reserva, notificacoes, camera
+from app.routes import auth,usuarios, estacionamento, veiculo, pagamento, admin,reserva, notificacoes, camera,vaga
 from fastapi.security import HTTPBearer
 
 security = HTTPBearer()
@@ -26,6 +26,7 @@ app.include_router(pagamento.router, prefix="/pagamento", tags=["Pagamento"])
 app.include_router(reserva.router, prefix="/reserva", tags=["Reserva"],dependencies=[Depends(security)])
 app.include_router(notificacoes.router, prefix="/notificacoes", tags=["Notificações"],dependencies=[Depends(security)])
 app.include_router(camera.router, prefix="/camera", tags=["Câmera"])
+app.include_router(vaga.router, prefix="/vaga", tags=["Vaga"],dependencies=[Depends(security)])
 
 @app.get("/")
 def home():

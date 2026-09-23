@@ -103,11 +103,39 @@ class Vaga(BaseModel):
     numero: str
     localizacao: str = ""
     preco: float = 0.0
-    tipo: Literal["Comum", "IdosoPcd", "Moto"] = "Comum"
+    tipo: str = "Carro"
     preferencial: bool = False
     disponivel: bool = True
     estacionamentoId: str
 
+# --- SCHEMAS AUXILIARES PARA VAGAS ---
+
+class VagaCreate(BaseModel):
+    numero: str
+    localizacao: Optional[str] = ""
+    preco: Optional[float] = 0.0
+    tipo: str = "Carro"
+    preferencial: bool = False
+    disponivel: bool = True
+    estacionamentoId: str
+
+class VagaUpdate(BaseModel):
+    numero: Optional[str] = None
+    localizacao: Optional[str] = None
+    preco: Optional[float] = None
+    tipo: str = "Carro"
+    preferencial: Optional[bool] = None
+    disponivel: Optional[bool] = None
+
+class VagasLoteCreate(BaseModel):
+    estacionamentoId: str
+    quantidade: int = Field(..., gt=0, description="Quantidade de vagas a gerar")
+    prefixo: Optional[str] = Field("A-", description="Prefixo para o número da vaga, ex: A-1, A-2")
+    tipo: str = "Carro"
+    preco: Optional[float] = 0.0
+    preferencial: bool = False
+    localizacao: Optional[str] = ""
+    
 # --- RESERVA ---
 
 class ReservaCreate(BaseModel):
