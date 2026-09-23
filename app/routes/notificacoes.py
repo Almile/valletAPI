@@ -5,10 +5,9 @@ from pydantic import BaseModel
 from app.valida_token import get_usuario_atual
 from app.core.firebase import db
 
-router = APIRouter(prefix="/notificacoes", tags=["Notificações"])
+router = APIRouter()
 database = db
 
-# --- Schemas para requisições POST ---
 class AcaoNotificacaoSchema(BaseModel):
     acao: str
     notificacao_id: str
@@ -19,7 +18,6 @@ class APIPayloadSchema(BaseModel):
     notificacoes_ids: Optional[list[str]] = None
 
 
-# --- Helper para buscar o ID do Estacionamento ---
 def _obter_estacionamento_id(usuario_logado: dict, id_header: Optional[str] = None) -> str:
     if id_header and id_header.strip():
         return id_header
@@ -28,8 +26,6 @@ def _obter_estacionamento_id(usuario_logado: dict, id_header: Optional[str] = No
     est_lista = [doc for doc in est_docs]
     return est_lista[0].id if est_lista else ""
 
-
-# 1. GET /notificacoes/ (Listagem com filtros para a página HTML)
 @router.get("/")
 def listar_notificacoes_page(
     tipo: Optional[str] = Query(""),
@@ -42,8 +38,7 @@ def listar_notificacoes_page(
     try:
         estacionamento_id = _obter_estacionamento_id(usuario_logado)
         
-        # Consulta as notificações do estacionamento no Firestore
-        notif_ref = database.collection("notificacao")
+        notif_ref = database.collection("notificacoes_admin")
         if estacionamento_id:
             notif_ref = notif_ref.where("estacionamentoId", "==", estacionamento_id)
 
@@ -64,21 +59,18 @@ def listar_notificacoes_page(
             if not lida:
                 nao_lidas += 1
 
-            # Filtro de Apenas Não Lidas ("on" ou "true")
             if apenas_nao_lidas in ["on", "true", "1"] and lida:
                 continue
 
-            # Filtro por Tipo
             if tipo and tipo.lower() != n_tipo:
                 continue
 
-            # Filtro por Placa
             n_placa = str(n.get("placa") or "").upper()
             if placa and placa.upper() not in n_placa:
                 continue
 
-            # Tratamento de Data
-            dt_criacao = n.get("dataCriacao") or n.get("criadoEm")
+            # Ajuste de leitura do TIMESTAMP do Firestore
+            dt_criacao = n.get("timestamp") or n.get("dataCriacao") or n.get("criadoEm")
             if hasattr(dt_criacao, "to_datetime"):
                 dt_criacao = dt_criacao.to_datetime()
             elif isinstance(dt_criacao, str):
@@ -98,11 +90,11 @@ def listar_notificacoes_page(
                 if dt_criacao.date() > dt_fim:
                     continue
 
-            # Formata o item
+            # Mapeamento com fallback para 'motivo'
             lista.append({
                 "id": n_id,
-                "titulo": n.get("titulo") or "Notificação",
-                "mensagem": n.get("mensagem") or "",
+                "titulo": n.get("titulo") or "Alerta do Sistema",
+                "mensagem": n.get("mensagem") or n.get("motivo") or "",
                 "tipo": n_tipo,
                 "placa": n_placa or "—",
                 "vaga_numero": n.get("vagaNumero") or n.get("numeroVaga") or "—",
@@ -117,7 +109,8 @@ def listar_notificacoes_page(
             "notificacoes": lista,
             "nao_lidas": nao_lidas,
             "total": len(docs),
-            "tipos_notificacao": sorted(list(tipos_set))
+            "tipos_notificacao": sorted(list(tipos_set)),
+            "id_estacionamento": estacionamento_id # Garante passagem para o JS no template
         }
 
     except Exception as e:
@@ -126,15 +119,13 @@ def listar_notificacoes_page(
             detail=f"Erro ao buscar notificações: {str(e)}"
         )
 
-
-# 2. POST /notificacoes/acao/ (Ação do formulário POST do Django)
 @router.post("/acao/")
 def executar_acao_notificacao(
     payload: AcaoNotificacaoSchema,
     usuario_logado: dict = Depends(get_usuario_atual)
 ):
     try:
-        doc_ref = database.collection("notificacao").document(payload.notificacao_id)
+        doc_ref = database.collection("notificacoes_admin").document(payload.notificacao_id)
         
         if payload.acao == "marcar_lida":
             doc_ref.update({"lida": True})
@@ -151,8 +142,6 @@ def executar_acao_notificacao(
             detail=f"Erro ao processar ação: {str(e)}"
         )
 
-
-# 3. GET e POST /notificacoes/api/ (Acessos via AJAX)
 @router.get("/api/")
 def api_listar_notificacoes(
     limit: int = Query(20),
@@ -162,8 +151,7 @@ def api_listar_notificacoes(
 ):
     try:
         estacionamento_id = _obter_estacionamento_id(usuario_logado)
-        
-        ref = database.collection("notificacao")
+        ref = database.collection("notificacoes_admin")
         if estacionamento_id:
             ref = ref.where("estacionamentoId", "==", estacionamento_id)
 
@@ -197,18 +185,16 @@ def api_acao_notificacao(
 ):
     try:
         if payload.notificacao_id:
-            doc_ref = database.collection("notificacao").document(payload.notificacao_id)
+            doc_ref = database.collection("notificacoes_admin").document(payload.notificacao_id)
             doc_ref.update({"lida": True})
         elif payload.notificacoes_ids:
             for nid in payload.notificacoes_ids:
-                database.collection("notificacao").document(nid).update({"lida": True})
+                database.collection("notificacoes_admin").document(nid).update({"lida": True})
 
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
-# 4. GET /notificacoes/check-new/ (Polling de verificação de novas notificações)
 @router.get("/check-new/")
 def checar_novas_notificacoes(
     last_check: Optional[str] = Query(""),
@@ -217,7 +203,7 @@ def checar_novas_notificacoes(
     try:
         estacionamento_id = _obter_estacionamento_id(usuario_logado)
         
-        ref = database.collection("notificacao").where("lida", "==", False)
+        ref = database.collection("notificacoes_admin").where("lida", "==", False)
         if estacionamento_id:
             ref = ref.where("estacionamentoId", "==", estacionamento_id)
 
@@ -232,8 +218,6 @@ def checar_novas_notificacoes(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
-# 5. GET /notificacoes/updates/ (Polling de atualizações incrementais)
 @router.get("/updates/")
 def obter_atualizacoes_notificacoes(
     ultima_atualizacao: Optional[str] = Query(""),
@@ -243,7 +227,7 @@ def obter_atualizacoes_notificacoes(
     try:
         estacionamento_id = _obter_estacionamento_id(usuario_logado)
         
-        ref = database.collection("notificacao")
+        ref = database.collection("notificacoes_admin")
         if estacionamento_id:
             ref = ref.where("estacionamentoId", "==", estacionamento_id)
 

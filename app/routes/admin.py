@@ -9,19 +9,15 @@ database = db
 
 
 @router.get("/{id_estacionamento}/dashboard")
-@router.get("/dashboard")  # Trata chamadas em que o ID do estacionamento não vai na URL
+@router.get("/dashboard")
 def obter_dashboard_estacionamento(
     id_estacionamento: Optional[str] = None,
     usuario_logado: dict = Depends(get_usuario_atual)
 ):
-    """
-    Retorna métricas e dados consolidados para o dashboard do gestor.
-    Se id_estacionamento for None, tenta buscar o primeiro estacionamento vinculado ao admin logado.
-    """
     uid = usuario_logado.get("uid")
 
     try:
-        # 1. Se id_estacionamento for omitido ou string vazia, descobre o estacionamento do admin
+        # 1. Identificação do estacionamento
         if not id_estacionamento or id_estacionamento.strip() == "":
             est_docs = database.collection("estacionamento").where("adminUid", "==", uid).limit(1).stream()
             est_lista = [doc for doc in est_docs]
@@ -41,18 +37,17 @@ def obter_dashboard_estacionamento(
                     detail="Estacionamento não encontrado."
                 )
 
-        dados_est = doc_estacionamento.to_dict()
+        dados_est = doc_estacionamento.to_dict() or {}
 
-        # 2. Leitura de Vagas (totais e ocupadas)
+        # 2. Leitura de Vagas
         vagas_total = dados_est.get("quantidadeVagasTotal", 0)
         vagas_disponiveis = dados_est.get("vagasDisponiveis", vagas_total)
         vagas_ocupadas = max(0, vagas_total - vagas_disponiveis)
 
-        # 3. Métricas de Reservas do Dia
+        # 3. Métricas de Reservas
         hoje_inicio = datetime.combine(datetime.now().date(), time.min)
         hoje_fim = datetime.combine(datetime.now().date(), time.max)
 
-        # Consultando reservas no Firestore para este estacionamento
         reservas_ref = database.collection("reserva").where("estacionamentoId", "==", id_estacionamento)
         reservas_docs = list(reservas_ref.stream())
 
@@ -64,48 +59,60 @@ def obter_dashboard_estacionamento(
         ultimas_reservas = []
 
         for doc in reservas_docs:
-            res_data = doc.to_dict()
+            res_data = doc.to_dict() or {}
             res_id = doc.id
-            status_reserva = res_data.get("status", "ativa").lower()
             
-            # Tratamento de datas do Firestore (Timestamp -> datetime)
-            data_criacao = res_data.get("dataCriacao")
-            if hasattr(data_criacao, "to_datetime"):
-                data_criacao = data_criacao.to_datetime()
+            # Normaliza o status garantindo que não quebre por None ou espaços
+            status_reserva = str(res_data.get("status", "")).strip().lower()
+            
+            # Tratamento da data
+            raw_data = res_data.get("dataCriacao") or res_data.get("inicioReserva")
+            dt_obj = None
 
-            # Checa se a reserva foi criada hoje
-            if data_criacao and hoje_inicio <= data_criacao <= hoje_fim:
+            if hasattr(raw_data, "to_datetime"):
+                dt_obj = raw_data.to_datetime()
+            elif isinstance(raw_data, datetime):
+                dt_obj = raw_data
+
+            if dt_obj and dt_obj.tzinfo is not None:
+                dt_obj = dt_obj.replace(tzinfo=None)
+
+            # 1. Checa se foi criada hoje
+            if dt_obj and hoje_inicio <= dt_obj <= hoje_fim:
                 reservas_hoje += 1
 
-            # Contagem por status
-            if status_reserva in ["ativa", "pendente"]:
+            # 2. Contagem flexível por status
+            if status_reserva in ["ativa", "pendente", "agendada", "confirmada"]:
                 reservas_pendentes += 1
-            elif status_reserva == "cancelada":
+            elif status_reserva in ["cancelada", "cancelado"]:
                 reservas_canceladas += 1
-                receita_cancelada_total += res_data.get("valorTotal", 0.0)
+                receita_cancelada_total += float(res_data.get("valorTotal", 0.0) or 0.0)
 
-            # Soma de receita de reservas concluídas / ativas
-            if status_reserva in ["concluida", "ativa"]:
-                receita_total += res_data.get("valorTotal", 0.0)
+            if status_reserva in ["concluida", "finalizada", "ativa", "confirmada"]:
+                receita_total += float(res_data.get("valorTotal", 0.0) or 0.0)
 
-            # Estrutura dados das últimas reservas para exibir no Dashboard
+            # Montagem segura do dicionário para a lista
             ultimas_reservas.append({
                 "id": res_id,
                 "usuario": res_data.get("usuarioEmail") or res_data.get("usuarioId", "N/A"),
-                "vaga": res_data.get("vagaId", "N/A"),
+                "nome_vaga_completo": res_data.get("vagaId") or res_data.get("vagaNumero") or "Vaga N/A",
                 "status": status_reserva.capitalize(),
-                "valor": f"{res_data.get('valorTotal', 0.0):,.2f}".replace(".", ","),
-                "data": data_criacao.strftime("%d/%m/%Y %H:%M") if data_criacao else "N/A"
+                "valor": f"{float(res_data.get('valorTotal', 0.0) or 0.0):,.2f}".replace(".", ","),
+                "inicioReserva": dt_obj.isoformat() if dt_obj else "",
+                "_dt_sort": dt_obj or datetime.min  # Usado exclusivamente para ordenação
             })
 
-        # Ordena últimas 5 reservas por data de criação mais recente
+        # Ordena com fallback de segurança e pega as 5 mais recentes
         ultimas_reservas = sorted(
             ultimas_reservas, 
-            key=lambda x: x["data"], 
+            key=lambda x: x["_dt_sort"], 
             reverse=True
         )[:5]
 
-        # 4. Resposta no formato exato que a view 'gestor' do Django consome
+        # Limpa o campo auxiliar de ordenação da resposta
+        for r in ultimas_reservas:
+            r.pop("_dt_sort", None)
+
         return {
             "id_estacionamento": id_estacionamento,
             "vagas_total": vagas_total,
@@ -121,6 +128,9 @@ def obter_dashboard_estacionamento(
     except HTTPException:
         raise
     except Exception as e:
+        # Exibe o log detalhado no terminal em caso de erro interno
+        import traceback
+        traceback.print_exc()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erro ao gerar métricas do dashboard: {str(e)}"
