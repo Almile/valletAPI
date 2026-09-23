@@ -4,12 +4,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from app.valida_token import get_usuario_atual
 from app.core.firebase import db
 
-# Instância do router e database
 router = APIRouter()
 database = db
 
-@router.get("/{id_estacionamento}/reservas/")
-@router.get("/reservas/")
+@router.get("/")
 def listar_reservas_estacionamento(
     id_estacionamento: Optional[str] = None,
     placa: Optional[str] = Query(None),
@@ -22,15 +20,16 @@ def listar_reservas_estacionamento(
     uid = usuario_logado.get("uid")
 
     try:
-        # 1. Se id_estacionamento não for informado, busca o primeiro vinculado ao admin logado
-        if not id_estacionamento or id_estacionamento.strip() == "":
+        # Se id_estacionamento não foi informado ou for igual ao UID do próprio Admin,
+        # busca o ID do documento de estacionamento correto vinculado a este adminUid
+        if not id_estacionamento or id_estacionamento.strip() in ["", "None", "null"] or id_estacionamento == uid:
             est_docs = database.collection("estacionamento").where("adminUid", "==", uid).limit(1).stream()
             est_lista = [doc for doc in est_docs]
             if not est_lista:
                 return {"reservas": []}
-            id_estacionamento = est_lista[0].id
+            id_estacionamento = est_lista[0].id  # Pega o ID real do documento do estacionamento
 
-        # 2. Busca reservas do estacionamento
+        # Busca reservas usando o ID real do estacionamento
         reservas_ref = database.collection("reserva").where("estacionamentoId", "==", id_estacionamento)
         reservas_docs = list(reservas_ref.stream())
 
@@ -40,7 +39,6 @@ def listar_reservas_estacionamento(
             r = doc.to_dict()
             res_id = doc.id
 
-            # Trata normalização de status
             status_reserva = str(r.get("status") or "desconhecida").lower()
             if status_reserva == "finalizada":
                 status_reserva = "concluida"
@@ -50,9 +48,8 @@ def listar_reservas_estacionamento(
             
             foto = "/static/default_profile.png"
             telefone = ""
-            placa_veiculo = r.get("placa")  # Tenta pegar direto do documento da reserva primeiro
+            placa_veiculo = r.get("placa")
 
-            # 3. Busca dados complementares do Usuário e Veículo no Firestore
             if usuario_id:
                 try:
                     u_doc = database.collection("usuario").document(usuario_id).get()
@@ -63,7 +60,6 @@ def listar_reservas_estacionamento(
                         if not nome_usuario:
                             nome_usuario = u.get("nome") or u.get("usuarioNome") or u.get("nomeMotorista")
 
-                    # Se a placa não estava gravada na reserva, busca na coleção 'veiculo'
                     if not placa_veiculo:
                         veiculos_docs = database.collection("veiculo").where("usuarioId", "==", usuario_id).limit(1).stream()
                         veiculos = [v.to_dict() for v in veiculos_docs]
@@ -73,13 +69,11 @@ def listar_reservas_estacionamento(
                 except Exception:
                     pass
 
-            # 4. Tratamento das Datas (inicioReserva e fimReserva)
             inicio_dt, fim_dt = None, None
             try:
                 raw_inicio = r.get("inicioReserva")
                 raw_fim = r.get("fimReserva")
                 
-                # Suporta tanto ISO String quanto Timestamp nativo do Firestore
                 if hasattr(raw_inicio, "to_datetime"):
                     inicio_dt = raw_inicio.to_datetime()
                 elif raw_inicio:
@@ -92,7 +86,6 @@ def listar_reservas_estacionamento(
             except Exception:
                 pass
 
-            # 5. Aplicação dos Filtros em Memória
             if placa and (not placa_veiculo or placa.lower() not in placa_veiculo.lower()):
                 continue
 
@@ -112,7 +105,6 @@ def listar_reservas_estacionamento(
                 if fim_dt.date() > dt_fim:
                     continue
 
-            # 6. Busca Número da Vaga
             numero_vaga = "—"
             vaga_id = r.get("vagaId")
             if vaga_id:
@@ -123,7 +115,6 @@ def listar_reservas_estacionamento(
                 except Exception:
                     pass
 
-            # Estrutura final enviada para o Django
             lista.append({
                 "id": res_id,
                 "placa": placa_veiculo or "—",
@@ -137,7 +128,6 @@ def listar_reservas_estacionamento(
                 "_sort_key": inicio_dt.isoformat() if inicio_dt else ""
             })
 
-        # Ordena da reserva mais recente para a mais antiga
         lista.sort(key=lambda x: x["_sort_key"], reverse=True)
 
         return {"reservas": lista}
