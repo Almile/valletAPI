@@ -192,3 +192,77 @@ def atualizar_estacionamento(
         raise HTTPException(status_code=422, detail="Dados de estacionamento inválidos.")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao atualizar estacionamento: {str(e)}")
+
+@router.delete("/excluir_estacionamento/{estacionamento_id}", status_code=status.HTTP_204_NO_CONTENT)
+def excluir_estacionamento(
+    estacionamento_id: str,
+    usuario_logado: dict = Depends(get_usuario_atual)
+):
+    """
+    Exclui um estacionamento e todos os seus dados vinculados (vagas, favoritos, notificações).
+    Apenas 'superadmin' ou o 'admin' responsável pelo estacionamento podem realizar esta ação.
+    """
+    try:
+        uid = usuario_logado.get("uid")
+        
+        solicitante_doc = database.collection("usuario").document(uid).get()
+        if not solicitante_doc.exists:
+            raise HTTPException(status_code=404, detail="Usuário solicitante não encontrado.")
+        
+        dados_solicitante = solicitante_doc.to_dict()
+        tipo_user = dados_solicitante.get("tipo_user")
+
+        est_ref = database.collection("estacionamento").document(estacionamento_id)
+        est_doc = est_ref.get()
+
+        if not est_doc.exists:
+            raise HTTPException(status_code=404, detail="Estacionamento não encontrado.")
+
+        dados_estacionamento = est_doc.to_dict()
+        admin_uid_estacionamento = dados_estacionamento.get("adminUid")
+
+        if tipo_user != "superadmin" and admin_uid_estacionamento != uid:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Você não tem permissão para excluir este estacionamento."
+            )
+
+        batch = database.batch()
+
+        # Excluir Vagas
+        vagas_query = database.collection("vaga").where("estacionamentoId", "==", estacionamento_id)
+        for doc in vagas_query.stream():
+            batch.delete(doc.reference)
+
+        # Excluir Favoritos
+        favoritos_query = database.collection("favoritos").where("estacionamentoId", "==", estacionamento_id)
+        for doc in favoritos_query.stream():
+            batch.delete(doc.reference)
+
+        # Excluir Notificações
+        notificacoes_query = database.collection("notificacoes_admin").where("estacionamentoId", "==", estacionamento_id)
+        for doc in notificacoes_query.stream():
+            batch.delete(doc.reference)
+            
+        # Excluir ou Cancelar Reservas
+        reservas_query = database.collection("reserva").where("estacionamentoId", "==", estacionamento_id)
+        for doc in reservas_query.stream():
+            dados_reserva = doc.to_dict()
+            if dados_reserva.get("status") not in ["cancelada", "concluida", "finalizada"]:
+                batch.update(doc.reference, {"status": "cancelada", "motivo_cancelamento": "Estacionamento excluído"})
+
+        # Excluir o próprio Estacionamento
+        batch.delete(est_ref)
+
+        # Commit de todas as operações
+        batch.commit()
+
+        return None
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro ao excluir estacionamento e dados vinculados: {str(e)}"
+        )
