@@ -1,12 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from app.models.schemas import EstacionamentoSchema, EstacionamentoCreate, EstacionamentoUpdate
+from app.models.schemas import Endereco, EstacionamentoSchema, EstacionamentoCreate, EstacionamentoUpdate
 from app.valida_token import get_usuario_atual
 from app.core.firebase import db
 from firebase_admin import firestore
 from pydantic import ValidationError
+from geopy.geocoders import Nominatim
+from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 
 router = APIRouter()
 database = db
+geolocator = Nominatim(user_agent="vallet_projeto_app")
 
 @router.post("/criar_estacionamento", response_model=EstacionamentoSchema, status_code=status.HTTP_201_CREATED)
 def criar_estacionamento(
@@ -39,7 +42,30 @@ def criar_estacionamento(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="O usuário selecionado para gerenciar o estacionamento não possui perfil de administrador."
             )
+        endereco_str = ""
+        if isinstance(estacionamento.endereco, str):
+            endereco_str = estacionamento.endereco
+        elif isinstance(estacionamento.endereco, Endereco):
+            logradouro_limpo = estacionamento.endereco.logradouro.split(',')[0].strip()
+            
+            partes = [
+                logradouro_limpo,
+                estacionamento.endereco.numero,
+                estacionamento.endereco.cidade,
+                estacionamento.endereco.uf
+            ]
+            endereco_str = ", ".join([p for p in partes if p]) + ", Brasil"
 
+        if endereco_str and (estacionamento.latitude == 0.0 or estacionamento.longitude == 0.0):
+            try:
+                location = geolocator.geocode(endereco_str, timeout=10, country_codes='BR')
+                if location:
+                    estacionamento.latitude = location.latitude
+                    estacionamento.longitude = location.longitude
+                else:
+                    print(f"Aviso: Endereço não encontrado no mapa: {endereco_str}")
+            except (GeocoderTimedOut, GeocoderServiceError) as e:
+                print(f"Erro de geocodificação: {e}")
         estacionamento_dict = estacionamento.model_dump()
         estacionamento_dict["adminEmail"] = dados_admin.get("email")
         estacionamento_dict["criadoPorUid"] = solicitante_uid
@@ -141,7 +167,9 @@ def atualizar_estacionamento(
     alteracoes: EstacionamentoUpdate,
     usuario_logado: dict = Depends(get_usuario_atual),
 ):
-    """Atualiza os campos enviados, preservando metadados e os demais dados."""
+    """Atualiza os campos enviados, preservando metadados e os demais dados.
+    Se o endereço for alterado, recalcula latitude e longitude automaticamente.
+    """
     try:
         uid = usuario_logado.get("uid")
         usuario_doc = database.collection("usuario").document(uid).get()
@@ -159,6 +187,7 @@ def atualizar_estacionamento(
         novos = alteracoes.model_dump(exclude_unset=True)
         if not novos:
             return EstacionamentoSchema(**{**atuais, "id": doc.id})
+        
         if "adminUid" in novos:
             if tipo_user != "superadmin" and novos["adminUid"] != atuais.get("adminUid"):
                 raise HTTPException(status_code=403, detail="Apenas superadmin pode alterar o administrador responsável.")
@@ -170,22 +199,55 @@ def atualizar_estacionamento(
                 raise HTTPException(status_code=400, detail="O responsável deve possuir perfil de administrador.")
             novos["adminEmail"] = admin.get("email")
 
-        if isinstance(novos.get("endereco"), dict) and isinstance(atuais.get("endereco"), dict):
-            novos["endereco"] = {**atuais["endereco"], **novos["endereco"]}
+        
+        endereco_foi_alterado = "endereco" in novos
+        if endereco_foi_alterado:
+            if isinstance(novos["endereco"], dict) and isinstance(atuais.get("endereco"), dict):
+                novos["endereco"] = {**atuais["endereco"], **novos["endereco"]}
+            
+            endereco_para_busca = ""
+            if isinstance(novos["endereco"], str):
+                endereco_para_busca = novos["endereco"]
+            elif isinstance(novos["endereco"], dict):
+                logradouro_limpo = novos["endereco"].get("logradouro", "").split(',')[0].strip()
+                
+                partes = [
+                    logradouro_limpo,
+                    novos["endereco"].get("numero", ""),
+                    novos["endereco"].get("cidade", ""),
+                    novos["endereco"].get("uf", "")
+                ]
+                endereco_para_busca = ", ".join([p for p in partes if p]) + ", Brasil"
+
+            if endereco_para_busca:
+                try:
+                    location = geolocator.geocode(endereco_para_busca, timeout=10, country_codes='BR')
+                    if location:
+                        novos["latitude"] = location.latitude
+                        novos["longitude"] = location.longitude
+                    else:
+                        print(f"Aviso: Endereço não encontrado no mapa durante atualização: {endereco_para_busca}")
+                except (GeocoderTimedOut, GeocoderServiceError) as e:
+                    print(f"Erro de geocodificação na atualização: {e}")
         resultado = {**atuais, **novos}
         validado = EstacionamentoCreate.model_validate(resultado)
+        
         if "endereco" in novos:
             endereco = validado.model_dump()["endereco"]
             novos["endereco"] = ({**novos["endereco"], **endereco}
                                 if isinstance(endereco, dict) else endereco)
             if isinstance(novos["endereco"], dict):
                 novos["endereco"].pop("localidade", None)
+                
         if validado.funciona24h:
             novos["horarioAbertura"] = validado.horarioAbertura
             novos["horarioFechamento"] = validado.horarioFechamento
+            
         novos["data_atualizacao"] = firestore.SERVER_TIMESTAMP
         ref.update(novos)
+        
         return EstacionamentoSchema(**{**atuais, **novos, "id": doc.id})
+        
     except HTTPException:
         raise
     except ValidationError:
