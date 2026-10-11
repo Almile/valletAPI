@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from app.models.schemas import EstacionamentoSchema, EstacionamentoCreate
+from app.models.schemas import EstacionamentoSchema, EstacionamentoCreate, EstacionamentoUpdate
 from app.valida_token import get_usuario_atual
 from app.core.firebase import db
 from firebase_admin import firestore
+from pydantic import ValidationError
 
 router = APIRouter()
 database = db
@@ -133,3 +134,61 @@ def listar_estacionamentos(usuario_logado: dict = Depends(get_usuario_atual)):
             status_code=500,
             detail=f"Erro ao listar estacionamentos: {str(e)}"
         )
+
+@router.patch("/atualizar_estacionamento/{estacionamento_id}", response_model=EstacionamentoSchema)
+def atualizar_estacionamento(
+    estacionamento_id: str,
+    alteracoes: EstacionamentoUpdate,
+    usuario_logado: dict = Depends(get_usuario_atual),
+):
+    """Atualiza os campos enviados, preservando metadados e os demais dados."""
+    try:
+        uid = usuario_logado.get("uid")
+        usuario_doc = database.collection("usuario").document(uid).get()
+        tipo_user = usuario_doc.to_dict().get("tipo_user") if usuario_doc.exists else None
+        ref = database.collection("estacionamento").document(estacionamento_id)
+        doc = ref.get()
+        if not doc.exists:
+            raise HTTPException(status_code=404, detail="Estacionamento não encontrado.")
+        atuais = doc.to_dict()
+        if tipo_user != "superadmin" and not (
+            tipo_user in ("admin", "administrador") and atuais.get("adminUid") == uid
+        ):
+            raise HTTPException(status_code=403, detail="Você não tem permissão para editar este estacionamento.")
+
+        novos = alteracoes.model_dump(exclude_unset=True)
+        if not novos:
+            return EstacionamentoSchema(**{**atuais, "id": doc.id})
+        if "adminUid" in novos:
+            if tipo_user != "superadmin" and novos["adminUid"] != atuais.get("adminUid"):
+                raise HTTPException(status_code=403, detail="Apenas superadmin pode alterar o administrador responsável.")
+            admin_doc = database.collection("usuario").document(novos["adminUid"]).get()
+            if not admin_doc.exists:
+                raise HTTPException(status_code=404, detail="Administrador não encontrado.")
+            admin = admin_doc.to_dict()
+            if admin.get("tipo_user") not in ("admin", "administrador", "superadmin"):
+                raise HTTPException(status_code=400, detail="O responsável deve possuir perfil de administrador.")
+            novos["adminEmail"] = admin.get("email")
+
+        if isinstance(novos.get("endereco"), dict) and isinstance(atuais.get("endereco"), dict):
+            novos["endereco"] = {**atuais["endereco"], **novos["endereco"]}
+        resultado = {**atuais, **novos}
+        validado = EstacionamentoCreate.model_validate(resultado)
+        if "endereco" in novos:
+            endereco = validado.model_dump()["endereco"]
+            novos["endereco"] = ({**novos["endereco"], **endereco}
+                                if isinstance(endereco, dict) else endereco)
+            if isinstance(novos["endereco"], dict):
+                novos["endereco"].pop("localidade", None)
+        if validado.funciona24h:
+            novos["horarioAbertura"] = validado.horarioAbertura
+            novos["horarioFechamento"] = validado.horarioFechamento
+        novos["data_atualizacao"] = firestore.SERVER_TIMESTAMP
+        ref.update(novos)
+        return EstacionamentoSchema(**{**atuais, **novos, "id": doc.id})
+    except HTTPException:
+        raise
+    except ValidationError:
+        raise HTTPException(status_code=422, detail="Dados de estacionamento inválidos.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao atualizar estacionamento: {str(e)}")

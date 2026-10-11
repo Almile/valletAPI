@@ -53,9 +53,17 @@ class Endereco(BaseModel):
     cep: Optional[str] = ""
     logradouro: Optional[str] = ""
     complemento: Optional[str] = ""
+    numero: Optional[str] = ""
     bairro: Optional[str] = ""
-    localidade: Optional[str] = ""
+    cidade: Optional[str] = ""
     uf: Optional[str] = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def aceitar_localidade_antiga(cls, dados):
+        if isinstance(dados, dict) and not dados.get("cidade") and dados.get("localidade"):
+            dados = {**dados, "cidade": dados["localidade"]}
+        return dados
 
 class EstacionamentoCreate(BaseModel):
     nome: str
@@ -70,6 +78,11 @@ class EstacionamentoCreate(BaseModel):
     vagasDisponiveis: Optional[int] = 1
     quantidadeVagasComum: Optional[int] = 0
     quantidadeVagasIdosoPcd: Optional[int] = 0
+
+    possuiVagasPcd: bool = False
+    quantidadeVagasPcd: int = 0
+    possuiVagasIdoso: bool = False
+    quantidadeVagasIdoso: int = 0
 
     tiposVagasComum: Optional[bool] = False
     tiposVagasIdosoPcd: Optional[bool] = False
@@ -115,6 +128,27 @@ class EstacionamentoSchema(EstacionamentoCreate):
         if self.funciona24h:
             return "Full time"
         return f"{self.horarioAbertura or '-'} às {self.horarioFechamento or '-'}"
+
+
+class EstacionamentoUpdate(BaseModel):
+    nome: Optional[str] = Field(default=None, min_length=1)
+    cnpj: Optional[str] = Field(default=None, min_length=1)
+    telefone: Optional[str] = None
+    adminUid: Optional[str] = None
+    endereco: Optional[Union[Endereco, str]] = None
+    quantidadeVagasTotal: Optional[int] = Field(default=None, ge=1)
+    quantidadeVagasComum: Optional[int] = Field(default=None, ge=0)
+    quantidadeVagasIdosoPcd: Optional[int] = Field(default=None, ge=0)
+    tiposVagasComum: Optional[bool] = None
+    tiposVagasIdosoPcd: Optional[bool] = None
+    possuiVagasPcd: Optional[bool] = None
+    quantidadeVagasPcd: Optional[int] = Field(default=None, ge=0)
+    possuiVagasIdoso: Optional[bool] = None
+    quantidadeVagasIdoso: Optional[int] = Field(default=None, ge=0)
+    valorHora: Optional[float] = Field(default=None, ge=0)
+    funciona24h: Optional[bool] = None
+    horarioAbertura: Optional[str] = None
+    horarioFechamento: Optional[str] = None
 
 # --- VAGA ---
 
