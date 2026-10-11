@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field,EmailStr
+from pydantic import BaseModel, Field, EmailStr, computed_field, model_validator
 from typing import Optional, Literal, Union
 from datetime import datetime
 
@@ -77,6 +77,10 @@ class EstacionamentoCreate(BaseModel):
     numeroPavimentos: Optional[int] = 1
 
     # Operação
+    funciona24h: bool = Field(
+        default=False,
+        description="Quando ativo, o estacionamento funciona continuamente, sem horário de fechamento.",
+    )
     horarioAbertura: Optional[str] = "08:00"
     horarioFechamento: Optional[str] = "18:00"
     valorHora: Optional[float] = 0.0
@@ -92,9 +96,25 @@ class EstacionamentoCreate(BaseModel):
     longitude: Optional[float] = 0.0
 
 
+    @model_validator(mode="after")
+    def normalizar_funcionamento_24h(self):
+        if self.funciona24h:
+            # Os horários são neutros; o booleano determina o funcionamento contínuo.
+            self.horarioAbertura = "00:00"
+            self.horarioFechamento = "00:00"
+        return self
+
+
 class EstacionamentoSchema(EstacionamentoCreate):
     id: Optional[str] = None
     adminEmail: Optional[str] = None
+
+    @computed_field
+    @property
+    def etiquetaFuncionamento(self) -> str:
+        if self.funciona24h:
+            return "Full time"
+        return f"{self.horarioAbertura or '-'} às {self.horarioFechamento or '-'}"
 
 # --- VAGA ---
 
