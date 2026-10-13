@@ -88,6 +88,18 @@ def criar_usuario(
             )
 
     try:
+        estacionamento_nome = None
+        if dados.estacionamentoId:
+            estacionamento_doc = database.collection("estacionamento").document(
+                dados.estacionamentoId
+            ).get()
+            if not estacionamento_doc.exists:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Estacionamento selecionado não foi encontrado."
+                )
+            estacionamento_nome = (estacionamento_doc.to_dict() or {}).get("nome")
+
         dados_usuario = auth.create_user(
             email=dados.email,
             password=dados.senha,
@@ -103,6 +115,8 @@ def criar_usuario(
             "telefone": dados.telefone or "",
             "fotoPerfil": dados.fotoPerfil or "",
             "cargo": dados.cargo or "",
+            "estacionamentoId": dados.estacionamentoId or None,
+            "estacionamentoNome": estacionamento_nome,
             "fcm_token": dados.fcm_token,
             "data_criacao": firestore.SERVER_TIMESTAMP,
             "ultima_atualizacao_token": None
@@ -118,6 +132,8 @@ def criar_usuario(
             "tipo_user": dados.tipo_user
         }
     
+    except HTTPException:
+        raise
     except auth.EmailAlreadyExistsError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

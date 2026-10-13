@@ -8,37 +8,80 @@ from app.core.firebase import db
 router = APIRouter()
 database = db
 
+
+def _usuario_com_estacionamento(uid: str, dados: dict) -> dict:
+    """Inclui o nome atual do estacionamento vinculado, quando houver."""
+    resultado = dict(dados or {})
+    resultado["uid"] = resultado.get("uid") or uid
+    estacionamento_id = resultado.get("estacionamentoId")
+    if estacionamento_id:
+        estacionamento_doc = database.collection("estacionamento").document(
+            str(estacionamento_id)
+        ).get()
+        if estacionamento_doc.exists:
+            resultado["estacionamentoNome"] = (estacionamento_doc.to_dict() or {}).get("nome")
+    return resultado
+
+
 @router.get("/", response_model=List[UsuarioResponse])
 def listar_usuarios(
     tipo: Optional[str] = Query(None, description="Filtra usuários pelo tipo (ex: admin, motorista)"),
     usuario_logado: dict = Depends(get_usuario_atual)
 ):
-    """
-    Lista usuários cadastrados no sistema. 
-    Se o parâmetro `tipo` for informado (ex: /usuarios?tipo=admin), filtra por tipo.
-    """
+    """Lista usuários cadastrados e inclui o estacionamento vinculado, se houver."""
     try:
         usuarios_ref = database.collection("usuario")
-
-        if tipo:
-            query = usuarios_ref.where("tipo_user", "==", tipo)
-            docs = query.stream()
-        else:
-            docs = usuarios_ref.stream()
+        docs = usuarios_ref.where("tipo_user", "==", tipo).stream() if tipo else usuarios_ref.stream()
 
         lista_usuarios = []
         for doc in docs:
-            dados = doc.to_dict()
-            if "uid" not in dados:
-                dados["uid"] = doc.id
+            dados = _usuario_com_estacionamento(doc.id, doc.to_dict() or {})
             lista_usuarios.append(UsuarioResponse(**dados))
-
         return lista_usuarios
-
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erro ao buscar usuários: {str(e)}"
+        )
+
+
+@router.get("/{uid}", response_model=UsuarioResponse)
+def obter_usuario_por_uid(
+    uid: str,
+    usuario_logado: dict = Depends(get_usuario_atual)
+):
+    """Obtém os dados detalhados de um usuário para o painel administrativo."""
+    try:
+        solicitante_uid = usuario_logado.get("uid")
+        solicitante_doc = database.collection("usuario").document(solicitante_uid).get()
+        solicitante = (solicitante_doc.to_dict() or {}) if solicitante_doc.exists else {}
+
+        if solicitante.get("tipo_user") != "superadmin" and solicitante_uid != uid:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Você não tem permissão para visualizar os dados deste usuário."
+            )
+
+        usuario_doc = database.collection("usuario").document(uid).get()
+        if not usuario_doc.exists:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Gerente não encontrado."
+            )
+
+        dados = _usuario_com_estacionamento(usuario_doc.id, usuario_doc.to_dict() or {})
+        if dados.get("tipo_user") not in ("admin", "administrador") and solicitante_uid != uid:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Gerente não encontrado."
+            )
+        return UsuarioResponse(**dados)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro ao buscar usuário: {str(e)}"
         )
 
 
