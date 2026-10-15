@@ -41,7 +41,6 @@ class VeiculoCreate(BaseModel):
     apelido: Optional[str] = None
     padrao: bool = False
     ano: int
-    km: float = 0.0
     tipo: Literal["Moto", "Carro", "Caminhão"]
 
 class VeiculoResponse(VeiculoCreate):
