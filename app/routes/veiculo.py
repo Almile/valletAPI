@@ -163,7 +163,8 @@ def atualizar_veiculo(
     usuario_logado: dict = Depends(get_usuario_atual)
 ):
     """
-    Atualiza os detalhes de um veículo específico associado ao usuário logado.
+    Atualiza um veículo do usuário conectado.
+    Preserva a cor existente quando esse campo não é enviado.
     """
     try:
         doc_ref = database.collection("veiculo").document(veiculo_id)
@@ -176,6 +177,7 @@ def atualizar_veiculo(
             )
 
         veiculo_data = doc.to_dict()
+
         if veiculo_data["usuarioId"] != usuario_logado.get("uid"):
             raise HTTPException(
                 status_code=403,
@@ -183,20 +185,27 @@ def atualizar_veiculo(
             )
 
         veiculo_dict = veiculo_atualizado.model_dump()
+
+        if "cor" not in veiculo_atualizado.model_fields_set:
+            veiculo_dict.pop("cor", None)
+        else:
+            veiculo_dict["cor"] = veiculo_atualizado.cor.strip()
+
         doc_ref.update(veiculo_dict)
 
         veiculo_data.update(veiculo_dict)
         veiculo_data["id"] = doc.id
+
         return VeiculoResponse(**veiculo_data)
 
     except HTTPException:
         raise
+
     except Exception as e:
         raise HTTPException(
             status_code=500,
             detail=f"Erro ao atualizar veículo: {str(e)}"
         )
-    
 
 @router.delete("/deletar_veiculo/{veiculo_id}", status_code=204)
 def deletar_veiculo(veiculo_id: str, usuario_logado: dict = Depends(get_usuario_atual)):
