@@ -91,15 +91,36 @@ def obter_dashboard_estacionamento(
             if status_reserva in ["concluida", "finalizada", "ativa", "confirmada"]:
                 receita_total += float(res_data.get("valorTotal", 0.0) or 0.0)
 
-            # Montagem segura do dicionário para a lista
+            usuario_id = res_data.get("usuarioId")
+            nome_usuario = "N/A"
+            if usuario_id:
+                try:
+                    user_doc = database.collection("usuario").document(usuario_id).get()
+                    if user_doc.exists:
+                        user_data = user_doc.to_dict()
+                        nome_usuario = user_data.get("nome") or user_data.get("email") or "N/A"
+                except Exception as e:
+                    print(f"Erro ao buscar usuário {usuario_id}: {e}")
+
+            vaga_id = res_data.get("vagaId")
+            numero_vaga = "N/A"
+            if vaga_id:
+                try:
+                    vaga_doc = database.collection("vaga").document(vaga_id).get()
+                    if vaga_doc.exists:
+                        vaga_data = vaga_doc.to_dict()
+                        numero_vaga = vaga_data.get("numero") or "N/A"
+                except Exception as e:
+                    print(f"Erro ao buscar vaga {vaga_id}: {e}")
+
             ultimas_reservas.append({
                 "id": res_id,
-                "usuario": res_data.get("usuarioEmail") or res_data.get("usuarioId", "N/A"),
-                "nome_vaga_completo": res_data.get("vagaId") or res_data.get("vagaNumero") or "Vaga N/A",
+                "usuario": nome_usuario,
+                "nome_vaga_completo": numero_vaga,
                 "status": status_reserva.capitalize(),
                 "valor": f"{float(res_data.get('valorTotal', 0.0) or 0.0):,.2f}".replace(".", ","),
                 "inicioReserva": dt_obj.isoformat() if dt_obj else "",
-                "_dt_sort": dt_obj or datetime.min  # Usado exclusivamente para ordenação
+                "_dt_sort": dt_obj or datetime.min
             })
 
         # Ordena com fallback de segurança e pega as 5 mais recentes
@@ -128,7 +149,6 @@ def obter_dashboard_estacionamento(
     except HTTPException:
         raise
     except Exception as e:
-        # Exibe o log detalhado no terminal em caso de erro interno
         import traceback
         traceback.print_exc()
         raise HTTPException(
