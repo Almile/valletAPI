@@ -48,14 +48,23 @@ def criar_estacionamento(
         endereco_str = ""
         if isinstance(estacionamento.endereco, str):
             endereco_str = estacionamento.endereco
-            print(endereco_str)
+            print(f"DEBUG: Endereço string: {endereco_str}")
+        elif isinstance(estacionamento.endereco, Endereco):
+            logradouro_limpo = estacionamento.endereco.logradouro.split(',')[0].strip()
+            cidade = estacionamento.endereco.cidade
+            uf = estacionamento.endereco.uf
+            
+            endereco_str = f"{logradouro_limpo}, {cidade}, {uf}, Brasil"
+            print(f"DEBUG: Endereço montado (Endereco): {endereco_str}")
         elif isinstance(estacionamento.endereco, dict):
             logradouro_limpo = estacionamento.endereco.get("logradouro", "").split(',')[0].strip()
             cidade = estacionamento.endereco.get("cidade", "")
             uf = estacionamento.endereco.get("uf", "")
             
             endereco_str = f"{logradouro_limpo}, {cidade}, {uf}, Brasil"
-            print(endereco_str)
+            print(f"DEBUG: Endereço montado (dict): {endereco_str}")
+        else:
+            print(f"DEBUG: Tipo de endereço não reconhecido: {type(estacionamento.endereco)}")
 
         if endereco_str and (estacionamento.latitude == 0.0 or estacionamento.longitude == 0.0):
             try:
