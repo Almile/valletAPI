@@ -41,6 +41,7 @@ class VeiculoCreate(BaseModel):
     apelido: Optional[str] = None
     padrao: bool = False
     ano: int
+    cor: str
     tipo: Literal["Moto", "Carro", "Caminhão"]
 
 class VeiculoResponse(VeiculoCreate):
@@ -108,7 +109,7 @@ class EstacionamentoCreate(BaseModel):
     distanciaMetros: Optional[int] = 0
     latitude: Optional[float] = 0.0
     longitude: Optional[float] = 0.0
-
+    geohash: Optional[str] = None
 
     @model_validator(mode="after")
     def normalizar_funcionamento_24h(self):
@@ -150,6 +151,7 @@ class EstacionamentoUpdate(BaseModel):
     funciona24h: Optional[bool] = None
     horarioAbertura: Optional[str] = None
     horarioFechamento: Optional[str] = None
+    geohash: Optional[str] = None
 
 # --- VAGA ---
 

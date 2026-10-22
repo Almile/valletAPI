@@ -6,6 +6,8 @@ from firebase_admin import firestore
 from pydantic import ValidationError
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut, GeocoderServiceError
+import pygeohash as pgh
+
 
 router = APIRouter()
 database = db
@@ -35,26 +37,34 @@ def criar_estacionamento(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="O administrador (adminUid) informado não foi encontrado."
             )
-            
         dados_admin = admin_doc.to_dict()
+        
         if dados_admin.get("tipo_user") not in ["admin", "administrador", "superadmin"]:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="O usuário selecionado para gerenciar o estacionamento não possui perfil de administrador."
             )
+
         endereco_str = ""
         if isinstance(estacionamento.endereco, str):
             endereco_str = estacionamento.endereco
+            print(f"DEBUG: Endereço string: {endereco_str}")
         elif isinstance(estacionamento.endereco, Endereco):
             logradouro_limpo = estacionamento.endereco.logradouro.split(',')[0].strip()
+            cidade = estacionamento.endereco.cidade
+            uf = estacionamento.endereco.uf
             
-            partes = [
-                logradouro_limpo,
-                estacionamento.endereco.numero,
-                estacionamento.endereco.cidade,
-                estacionamento.endereco.uf
-            ]
-            endereco_str = ", ".join([p for p in partes if p]) + ", Brasil"
+            endereco_str = f"{logradouro_limpo}, {cidade}, {uf}, Brasil"
+            print(f"DEBUG: Endereço montado (Endereco): {endereco_str}")
+        elif isinstance(estacionamento.endereco, dict):
+            logradouro_limpo = estacionamento.endereco.get("logradouro", "").split(',')[0].strip()
+            cidade = estacionamento.endereco.get("cidade", "")
+            uf = estacionamento.endereco.get("uf", "")
+            
+            endereco_str = f"{logradouro_limpo}, {cidade}, {uf}, Brasil"
+            print(f"DEBUG: Endereço montado (dict): {endereco_str}")
+        else:
+            print(f"DEBUG: Tipo de endereço não reconhecido: {type(estacionamento.endereco)}")
 
         if endereco_str and (estacionamento.latitude == 0.0 or estacionamento.longitude == 0.0):
             try:
@@ -62,6 +72,7 @@ def criar_estacionamento(
                 if location:
                     estacionamento.latitude = location.latitude
                     estacionamento.longitude = location.longitude
+                    estacionamento.geohash = pgh.encode(latitude=location.latitude, longitude=location.longitude, precision=9)
                 else:
                     print(f"Aviso: Endereço não encontrado no mapa: {endereco_str}")
             except (GeocoderTimedOut, GeocoderServiceError) as e:
@@ -225,10 +236,17 @@ def atualizar_estacionamento(
                     if location:
                         novos["latitude"] = location.latitude
                         novos["longitude"] = location.longitude
+                        novos["geohash"] = pgh.encode(latitude=location.latitude, longitude=location.longitude, precision=9)
                     else:
                         print(f"Aviso: Endereço não encontrado no mapa durante atualização: {endereco_para_busca}")
                 except (GeocoderTimedOut, GeocoderServiceError) as e:
                     print(f"Erro de geocodificação na atualização: {e}")
+                
+        if isinstance(novos.get("endereco"), dict):
+            novos["endereco"].pop("localidade", None)
+        if isinstance(atuais.get("endereco"), dict):
+            atuais["endereco"].pop("localidade", None)
+
         resultado = {**atuais, **novos}
         validado = EstacionamentoCreate.model_validate(resultado)
         
@@ -236,8 +254,6 @@ def atualizar_estacionamento(
             endereco = validado.model_dump()["endereco"]
             novos["endereco"] = ({**novos["endereco"], **endereco}
                                 if isinstance(endereco, dict) else endereco)
-            if isinstance(novos["endereco"], dict):
-                novos["endereco"].pop("localidade", None)
                 
         if validado.funciona24h:
             novos["horarioAbertura"] = validado.horarioAbertura
