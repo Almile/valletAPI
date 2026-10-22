@@ -1,57 +1,84 @@
+import os
+import mercadopago
 from fastapi import APIRouter, HTTPException
 from datetime import datetime
-import uuid
 from app.models.schemas import RequisicaoPagamento
 from app.core.firebase import db
+import traceback
+from dotenv import load_dotenv
+
+load_dotenv() 
 
 router = APIRouter()
 
-@router.post("/simular")
-def simular_pagamento(dados: RequisicaoPagamento):
-    if dados.valor <= 0:
-        raise HTTPException(status_code=400, detail="Valor de pagamento inválido.")
+@router.post("/pix")
+def criar_pagamento_pix(dados: RequisicaoPagamento):
+    try:    
+        if dados.valor <= 0:
+            raise HTTPException(status_code=400, detail="Valor de pagamento inválido.")
 
+        reserva_ref = db.collection("reserva").document(dados.reserva_id)
+        reserva_doc = reserva_ref.get()
 
-    reserva_ref = db.collection("reserva").document(dados.reserva_id)
-    reserva_doc = reserva_ref.get()
+        if not reserva_doc.exists:
+            raise HTTPException(status_code=404, detail="Reserva não encontrada.")
 
-    if not reserva_doc.exists:
-        raise HTTPException(status_code=404, detail="Reserva não encontrada.")
+        usuario_doc = db.collection("usuario").document(dados.usuario_id).get()
+        email_usuario = usuario_doc.to_dict().get("email") if usuario_doc.exists else "teste@vallet.com"
 
-    status_pagamento = "aprovado"
-    motivo = None
+        token = os.getenv("MERCADO_PAGO_ACCESS_TOKEN", "").strip()
+        if not token:
+            raise HTTPException(status_code=500, detail="O .env não foi lido ou o Token está vazio.")
 
-    if dados.metodo == "cartao_credito" and dados.numero_cartao == "0000000000000000":
-        status_pagamento = "recusado"
-        motivo = "Cartão recusado pela operadora (simulação)"
+        sdk = mercadopago.SDK(token)
 
-    id_transacao = str(uuid.uuid4())
+        payment_data = {
+            "transaction_amount": float(dados.valor),
+            "description": f"Reserva Vallet - {dados.reserva_id}",
+            "payment_method_id": "pix",
+            "payer": {
+                "email": email_usuario
+            }
+        }
 
-    dados_transacao = {
-        "id_transacao": id_transacao,
-        "valor": dados.valor,
-        "metodo": dados.metodo,
-        "status": status_pagamento,
-        "usuario_id": dados.usuario_id,
-        "reserva_id": dados.reserva_id,
-        "criado_em": datetime.utcnow().isoformat()
-    }
-    db.collection("pagamento").document(id_transacao).set(dados_transacao)
+        payment_response = sdk.payment().create(payment_data)
+        payment = payment_response["response"]
 
-    if status_pagamento == "aprovado":
+        if "id" not in payment:
+            raise HTTPException(status_code=500, detail=f"Erro no Mercado Pago: {payment.get('message', 'Erro desconhecido')}")
+
+        id_transacao = str(payment["id"])
+        status_pagamento = payment["status"]
+        
+        qr_code = payment["point_of_interaction"]["transaction_data"]["qr_code"]
+        qr_code_base64 = payment["point_of_interaction"]["transaction_data"]["qr_code_base64"]
+
+        dados_transacao = {
+            "id_transacao": id_transacao,
+            "valor": dados.valor,
+            "metodo": "pix",
+            "status": status_pagamento,
+            "usuario_id": dados.usuario_id,
+            "reserva_id": dados.reserva_id,
+            "criado_em": datetime.utcnow().isoformat()
+        }
+        db.collection("pagamento").document(id_transacao).set(dados_transacao)
+
         reserva_ref.update({
-            "status": "pago",
-            "pago_em": datetime.utcnow().isoformat()
+            "status": "aguardando_pagamento",
+            "pagamento_id": id_transacao
         })
+
         return {
             "id_transacao": id_transacao,
             "status": status_pagamento,
-            "mensagem": "Pagamento aprovado e status da reserva atualizado com sucesso!"
+            "qr_code": qr_code,
+            "qr_code_base64": qr_code_base64,
+            "mensagem": "Pix gerado com sucesso no Mercado Pago!"
         }
 
-    return {
-        "id_transacao": id_transacao,
-        "status": status_pagamento,
-        "motivo": motivo,
-        "mensagem": "Pagamento recusado."
-    }
+    except Exception as e:
+        print("===== ERRO DETALHADO NA API =====")
+        traceback.print_exc()
+        print("==================================")
+        raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
