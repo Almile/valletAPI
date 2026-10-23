@@ -15,7 +15,6 @@ class UsuarioSchema(BaseModel):
     telefone: Optional[str] = None
     cargo: Optional[str] = None
     fcm_token: Optional[str] = None
-    estacionamentoId: Optional[str] = None
 
 class UsuarioCreate(UsuarioSchema):
     senha: str = Field(..., min_length=6, examples=["senha123"])
@@ -29,7 +28,6 @@ class UsuarioUpdate(BaseModel):
 
 class UsuarioResponse(UsuarioSchema):
     uid: str
-    estacionamentoNome: Optional[str] = None
     data_criacao: Optional[datetime] = None
     ultima_atualizacao_token: Optional[datetime] = None
 

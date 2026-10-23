@@ -31,7 +31,7 @@ def criar_estacionamento(
                 detail="Apenas usuários com perfil 'superadmin' podem cadastrar estacionamentos."
             )
 
-        admin_doc = database.collection("usuario").document(estacionamento.adminUid).get()
+            admin_doc = database.collection("usuario").document(estacionamento.adminUid).get()
         if not admin_doc.exists:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -43,6 +43,13 @@ def criar_estacionamento(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="O usuário selecionado para gerenciar o estacionamento não possui perfil de administrador."
+            )
+
+        estacionamento_existente = database.collection("estacionamento").where("adminUid", "==", estacionamento.adminUid).limit(1).stream()
+        if any(True for _ in estacionamento_existente):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Este administrador já está vinculado a um estacionamento. Cada admin pode gerenciar apenas um."
             )
 
         endereco_str = ""
@@ -199,7 +206,14 @@ def atualizar_estacionamento(
         if not novos:
             return EstacionamentoSchema(**{**atuais, "id": doc.id})
         
-        if "adminUid" in novos:
+            if "adminUid" in novos and novos["adminUid"] != atuais.get("adminUid"):
+                est_existente = database.collection("estacionamento").where("adminUid", "==", novos["adminUid"]).limit(1).stream()
+                for doc in est_existente:
+                    if doc.id != estacionamento_id:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="O novo administrador já está vinculado a outro estacionamento."
+                        )
             if tipo_user != "superadmin" and novos["adminUid"] != atuais.get("adminUid"):
                 raise HTTPException(status_code=403, detail="Apenas superadmin pode alterar o administrador responsável.")
             admin_doc = database.collection("usuario").document(novos["adminUid"]).get()
