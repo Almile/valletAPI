@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from app.models.schemas import Endereco, EstacionamentoSchema, EstacionamentoCreate, EstacionamentoUpdate
+from app.models.schemas import Endereco, EstacionamentoSchema, EstacionamentoBase, EstacionamentoCreate, EstacionamentoUpdate
 from app.valida_token import get_usuario_atual
 from app.core.firebase import db
 from firebase_admin import firestore
@@ -12,6 +12,25 @@ import pygeohash as pgh
 router = APIRouter()
 database = db
 geolocator = Nominatim(user_agent="vallet_projeto_app")
+
+def resumo_vagas(vagas):
+    preferenciais = sum(1 for vaga in vagas if vaga.get("preferencial") or vaga.get("tipo") == "IdosoPcd")
+    return {
+        "quantidadeVagasTotal": len(vagas),
+        "vagasDisponiveis": sum(1 for vaga in vagas if vaga.get("disponivel", True)),
+        "quantidadeVagasComum": len(vagas) - preferenciais,
+        "quantidadeVagasIdosoPcd": preferenciais,
+        "tiposVagasComum": len(vagas) > preferenciais,
+        "tiposVagasIdosoPcd": preferenciais > 0,
+    }
+
+
+def atualizar_resumo_resposta(dados, estacionamento_id):
+    vagas = [doc.to_dict() for doc in database.collection("vaga")
+             .where("estacionamentoId", "==", estacionamento_id).stream()]
+    dados.update(resumo_vagas(vagas))
+    return dados
+
 
 @router.post("/criar_estacionamento", response_model=EstacionamentoSchema, status_code=status.HTTP_201_CREATED)
 def criar_estacionamento(
@@ -84,15 +103,27 @@ def criar_estacionamento(
                     print(f"Aviso: Endereço não encontrado no mapa: {endereco_str}")
             except (GeocoderTimedOut, GeocoderServiceError) as e:
                 print(f"Erro de geocodificação: {e}")
-        estacionamento_dict = estacionamento.model_dump()
+        estacionamento_dict = estacionamento.model_dump(exclude={"vagasIniciais"})
+        vagas_iniciais = [vaga.model_dump() for vaga in estacionamento.vagasIniciais]
+        estacionamento_dict.update(resumo_vagas(vagas_iniciais))
+        # As vagas iniciais são criadas livres. Quantidades enviadas manualmente são ignoradas.
         estacionamento_dict["adminEmail"] = dados_admin.get("email")
         estacionamento_dict["criadoPorUid"] = solicitante_uid
         estacionamento_dict["data_criacao"] = firestore.SERVER_TIMESTAMP
 
         doc_ref = database.collection("estacionamento").document()
-        doc_ref.set(estacionamento_dict)
+        batch = database.batch()
+        batch.set(doc_ref, estacionamento_dict)
+        for vaga in vagas_iniciais:
+            vaga_ref = database.collection("vaga").document()
+            batch.set(vaga_ref, {
+                **vaga, "id": vaga_ref.id,
+                "estacionamentoId": doc_ref.id, "disponivel": True,
+            })
+        resposta = EstacionamentoSchema(**estacionamento_dict, id=doc_ref.id)
+        batch.commit()
 
-        return EstacionamentoSchema(**estacionamento_dict, id=doc_ref.id)
+        return resposta
 
     except HTTPException:
         raise
@@ -135,7 +166,7 @@ def buscar_estacionamento_por_id(
                 detail="Você não tem permissão para visualizar os detalhes deste estacionamento."
             )
 
-        return EstacionamentoSchema(**dados)
+        return EstacionamentoSchema(**atualizar_resumo_resposta(dados, estacionamento_id))
 
     except HTTPException:
         raise
@@ -169,7 +200,7 @@ def listar_estacionamentos(usuario_logado: dict = Depends(get_usuario_atual)):
         for doc in estacionamentos_docs:
             estacionamento_data = doc.to_dict()
             estacionamento_data["id"] = doc.id
-            estacionamentos_list.append(EstacionamentoSchema(**estacionamento_data))
+            estacionamentos_list.append(EstacionamentoSchema(**atualizar_resumo_resposta(estacionamento_data, doc.id)))
 
         return estacionamentos_list
 
@@ -262,7 +293,7 @@ def atualizar_estacionamento(
             atuais["endereco"].pop("localidade", None)
 
         resultado = {**atuais, **novos}
-        validado = EstacionamentoCreate.model_validate(resultado)
+        validado = EstacionamentoBase.model_validate(resultado)
         
         if "endereco" in novos:
             endereco = validado.model_dump()["endereco"]
