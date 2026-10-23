@@ -30,6 +30,8 @@ class UsuarioResponse(UsuarioSchema):
     uid: str
     data_criacao: Optional[datetime] = None
     ultima_atualizacao_token: Optional[datetime] = None
+    estacionamentoId: Optional[str] = None
+    estacionamentoNome: Optional[str] = None
 
 # --- VEICULO ---
 class VeiculoCreate(BaseModel):
