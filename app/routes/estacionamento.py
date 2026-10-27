@@ -1,15 +1,36 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from app.models.schemas import Endereco, EstacionamentoSchema, EstacionamentoCreate, EstacionamentoUpdate
+from app.models.schemas import Endereco, EstacionamentoSchema, EstacionamentoBase, EstacionamentoCreate, EstacionamentoUpdate
 from app.valida_token import get_usuario_atual
 from app.core.firebase import db
 from firebase_admin import firestore
 from pydantic import ValidationError
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut, GeocoderServiceError
+import pygeohash as pgh
+
 
 router = APIRouter()
 database = db
 geolocator = Nominatim(user_agent="vallet_projeto_app")
+
+def resumo_vagas(vagas):
+    preferenciais = sum(1 for vaga in vagas if vaga.get("preferencial") or vaga.get("tipo") == "IdosoPcd")
+    return {
+        "quantidadeVagasTotal": len(vagas),
+        "vagasDisponiveis": sum(1 for vaga in vagas if vaga.get("disponivel", True)),
+        "quantidadeVagasComum": len(vagas) - preferenciais,
+        "quantidadeVagasIdosoPcd": preferenciais,
+        "tiposVagasComum": len(vagas) > preferenciais,
+        "tiposVagasIdosoPcd": preferenciais > 0,
+    }
+
+
+def atualizar_resumo_resposta(dados, estacionamento_id):
+    vagas = [doc.to_dict() for doc in database.collection("vaga")
+             .where("estacionamentoId", "==", estacionamento_id).stream()]
+    dados.update(resumo_vagas(vagas))
+    return dados
+
 
 @router.post("/criar_estacionamento", response_model=EstacionamentoSchema, status_code=status.HTTP_201_CREATED)
 def criar_estacionamento(
@@ -29,32 +50,47 @@ def criar_estacionamento(
                 detail="Apenas usuários com perfil 'superadmin' podem cadastrar estacionamentos."
             )
 
-        admin_doc = database.collection("usuario").document(estacionamento.adminUid).get()
+            admin_doc = database.collection("usuario").document(estacionamento.adminUid).get()
         if not admin_doc.exists:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="O administrador (adminUid) informado não foi encontrado."
             )
-            
         dados_admin = admin_doc.to_dict()
+        
         if dados_admin.get("tipo_user") not in ["admin", "administrador", "superadmin"]:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="O usuário selecionado para gerenciar o estacionamento não possui perfil de administrador."
             )
+
+        estacionamento_existente = database.collection("estacionamento").where("adminUid", "==", estacionamento.adminUid).limit(1).stream()
+        if any(True for _ in estacionamento_existente):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Este administrador já está vinculado a um estacionamento. Cada admin pode gerenciar apenas um."
+            )
+
         endereco_str = ""
         if isinstance(estacionamento.endereco, str):
             endereco_str = estacionamento.endereco
+            print(f"DEBUG: Endereço string: {endereco_str}")
         elif isinstance(estacionamento.endereco, Endereco):
             logradouro_limpo = estacionamento.endereco.logradouro.split(',')[0].strip()
+            cidade = estacionamento.endereco.cidade
+            uf = estacionamento.endereco.uf
             
-            partes = [
-                logradouro_limpo,
-                estacionamento.endereco.numero,
-                estacionamento.endereco.cidade,
-                estacionamento.endereco.uf
-            ]
-            endereco_str = ", ".join([p for p in partes if p]) + ", Brasil"
+            endereco_str = f"{logradouro_limpo}, {cidade}, {uf}, Brasil"
+            print(f"DEBUG: Endereço montado (Endereco): {endereco_str}")
+        elif isinstance(estacionamento.endereco, dict):
+            logradouro_limpo = estacionamento.endereco.get("logradouro", "").split(',')[0].strip()
+            cidade = estacionamento.endereco.get("cidade", "")
+            uf = estacionamento.endereco.get("uf", "")
+            
+            endereco_str = f"{logradouro_limpo}, {cidade}, {uf}, Brasil"
+            print(f"DEBUG: Endereço montado (dict): {endereco_str}")
+        else:
+            print(f"DEBUG: Tipo de endereço não reconhecido: {type(estacionamento.endereco)}")
 
         if endereco_str and (estacionamento.latitude == 0.0 or estacionamento.longitude == 0.0):
             try:
@@ -62,19 +98,32 @@ def criar_estacionamento(
                 if location:
                     estacionamento.latitude = location.latitude
                     estacionamento.longitude = location.longitude
+                    estacionamento.geohash = pgh.encode(latitude=location.latitude, longitude=location.longitude, precision=9)
                 else:
                     print(f"Aviso: Endereço não encontrado no mapa: {endereco_str}")
             except (GeocoderTimedOut, GeocoderServiceError) as e:
                 print(f"Erro de geocodificação: {e}")
-        estacionamento_dict = estacionamento.model_dump()
+        estacionamento_dict = estacionamento.model_dump(exclude={"vagasIniciais"})
+        vagas_iniciais = [vaga.model_dump() for vaga in estacionamento.vagasIniciais]
+        estacionamento_dict.update(resumo_vagas(vagas_iniciais))
+        # As vagas iniciais são criadas livres. Quantidades enviadas manualmente são ignoradas.
         estacionamento_dict["adminEmail"] = dados_admin.get("email")
         estacionamento_dict["criadoPorUid"] = solicitante_uid
         estacionamento_dict["data_criacao"] = firestore.SERVER_TIMESTAMP
 
         doc_ref = database.collection("estacionamento").document()
-        doc_ref.set(estacionamento_dict)
+        batch = database.batch()
+        batch.set(doc_ref, estacionamento_dict)
+        for vaga in vagas_iniciais:
+            vaga_ref = database.collection("vaga").document()
+            batch.set(vaga_ref, {
+                **vaga, "id": vaga_ref.id,
+                "estacionamentoId": doc_ref.id, "disponivel": True,
+            })
+        resposta = EstacionamentoSchema(**estacionamento_dict, id=doc_ref.id)
+        batch.commit()
 
-        return EstacionamentoSchema(**estacionamento_dict, id=doc_ref.id)
+        return resposta
 
     except HTTPException:
         raise
@@ -117,7 +166,7 @@ def buscar_estacionamento_por_id(
                 detail="Você não tem permissão para visualizar os detalhes deste estacionamento."
             )
 
-        return EstacionamentoSchema(**dados)
+        return EstacionamentoSchema(**atualizar_resumo_resposta(dados, estacionamento_id))
 
     except HTTPException:
         raise
@@ -151,7 +200,7 @@ def listar_estacionamentos(usuario_logado: dict = Depends(get_usuario_atual)):
         for doc in estacionamentos_docs:
             estacionamento_data = doc.to_dict()
             estacionamento_data["id"] = doc.id
-            estacionamentos_list.append(EstacionamentoSchema(**estacionamento_data))
+            estacionamentos_list.append(EstacionamentoSchema(**atualizar_resumo_resposta(estacionamento_data, doc.id)))
 
         return estacionamentos_list
 
@@ -188,7 +237,14 @@ def atualizar_estacionamento(
         if not novos:
             return EstacionamentoSchema(**{**atuais, "id": doc.id})
         
-        if "adminUid" in novos:
+            if "adminUid" in novos and novos["adminUid"] != atuais.get("adminUid"):
+                est_existente = database.collection("estacionamento").where("adminUid", "==", novos["adminUid"]).limit(1).stream()
+                for doc in est_existente:
+                    if doc.id != estacionamento_id:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="O novo administrador já está vinculado a outro estacionamento."
+                        )
             if tipo_user != "superadmin" and novos["adminUid"] != atuais.get("adminUid"):
                 raise HTTPException(status_code=403, detail="Apenas superadmin pode alterar o administrador responsável.")
             admin_doc = database.collection("usuario").document(novos["adminUid"]).get()
@@ -225,19 +281,24 @@ def atualizar_estacionamento(
                     if location:
                         novos["latitude"] = location.latitude
                         novos["longitude"] = location.longitude
+                        novos["geohash"] = pgh.encode(latitude=location.latitude, longitude=location.longitude, precision=9)
                     else:
                         print(f"Aviso: Endereço não encontrado no mapa durante atualização: {endereco_para_busca}")
                 except (GeocoderTimedOut, GeocoderServiceError) as e:
                     print(f"Erro de geocodificação na atualização: {e}")
+                
+        if isinstance(novos.get("endereco"), dict):
+            novos["endereco"].pop("localidade", None)
+        if isinstance(atuais.get("endereco"), dict):
+            atuais["endereco"].pop("localidade", None)
+
         resultado = {**atuais, **novos}
-        validado = EstacionamentoCreate.model_validate(resultado)
+        validado = EstacionamentoBase.model_validate(resultado)
         
         if "endereco" in novos:
             endereco = validado.model_dump()["endereco"]
             novos["endereco"] = ({**novos["endereco"], **endereco}
                                 if isinstance(endereco, dict) else endereco)
-            if isinstance(novos["endereco"], dict):
-                novos["endereco"].pop("localidade", None)
                 
         if validado.funciona24h:
             novos["horarioAbertura"] = validado.horarioAbertura

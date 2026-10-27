@@ -10,18 +10,57 @@ database = db
 
 
 def _usuario_com_estacionamento(uid: str, dados: dict) -> dict:
-    """Inclui o nome atual do estacionamento vinculado, quando houver."""
+    """
+    Inclui o ID e o nome do estacionamento vinculado ao usuário.
+    """
     resultado = dict(dados or {})
     resultado["uid"] = resultado.get("uid") or uid
-    estacionamento_id = resultado.get("estacionamentoId")
-    if estacionamento_id:
-        estacionamento_doc = database.collection("estacionamento").document(
-            str(estacionamento_id)
-        ).get()
-        if estacionamento_doc.exists:
-            resultado["estacionamentoNome"] = (estacionamento_doc.to_dict() or {}).get("nome")
+
+    if resultado.get("tipo_user") in ("admin", "administrador"):
+        est_docs = database.collection("estacionamento").where("adminUid", "==", uid).limit(1).stream()
+        for est_doc in est_docs:
+            est_data = est_doc.to_dict() or {}
+            resultado["estacionamentoId"] = est_doc.id
+            resultado["estacionamentoNome"] = est_data.get("nome")
+            break
+
+    elif resultado.get("estacionamentoId"):
+        estacionamento_id = resultado["estacionamentoId"]
+        est_doc = database.collection("estacionamento").document(str(estacionamento_id)).get()
+        if est_doc.exists:
+            resultado["estacionamentoNome"] = (est_doc.to_dict() or {}).get("nome")
+
     return resultado
 
+@router.get("/listar_admins_disponiveis")
+def listar_admins_disponiveis(usuario_logado: dict = Depends(get_usuario_atual)):
+    """
+    Lista apenas admins que ainda não estão vinculados a nenhum estacionamento.
+    """
+    try:
+        admins_docs = database.collection("usuario").where("tipo_user", "in", ["admin", "administrador"]).stream()
+        admins = []
+        for doc in admins_docs:
+            data = doc.to_dict()
+            data["uid"] = doc.id
+            admins.append(data)
+
+        estacionamentos_docs = database.collection("estacionamento").stream()
+        admins_vinculados = set()
+        for doc in estacionamentos_docs:
+            data = doc.to_dict()
+            if data.get("adminUid"):
+                admins_vinculados.add(data["adminUid"])
+
+        admins_disponiveis = [a for a in admins if a["uid"] not in admins_vinculados]
+
+        return admins_disponiveis
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro ao listar administradores disponíveis: {str(e)}"
+        )
 
 @router.get("/", response_model=List[UsuarioResponse])
 def listar_usuarios(

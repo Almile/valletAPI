@@ -15,7 +15,6 @@ class UsuarioSchema(BaseModel):
     telefone: Optional[str] = None
     cargo: Optional[str] = None
     fcm_token: Optional[str] = None
-    estacionamentoId: Optional[str] = None
 
 class UsuarioCreate(UsuarioSchema):
     senha: str = Field(..., min_length=6, examples=["senha123"])
@@ -29,9 +28,10 @@ class UsuarioUpdate(BaseModel):
 
 class UsuarioResponse(UsuarioSchema):
     uid: str
-    estacionamentoNome: Optional[str] = None
     data_criacao: Optional[datetime] = None
     ultima_atualizacao_token: Optional[datetime] = None
+    estacionamentoId: Optional[str] = None
+    estacionamentoNome: Optional[str] = None
 
 # --- VEICULO ---
 class VeiculoCreate(BaseModel):
@@ -67,7 +67,7 @@ class Endereco(BaseModel):
             dados = {**dados, "cidade": dados["localidade"]}
         return dados
 
-class EstacionamentoCreate(BaseModel):
+class EstacionamentoBase(BaseModel):
     nome: str
     cnpj: str
     telefone: Optional[str] = ""
@@ -76,8 +76,8 @@ class EstacionamentoCreate(BaseModel):
     
     endereco: Optional[Union[Endereco, str]] = None
     
-    quantidadeVagasTotal: Optional[int] = 1
-    vagasDisponiveis: Optional[int] = 1
+    quantidadeVagasTotal: Optional[int] = 0
+    vagasDisponiveis: Optional[int] = 0
     quantidadeVagasComum: Optional[int] = 0
     quantidadeVagasIdosoPcd: Optional[int] = 0
 
@@ -109,7 +109,7 @@ class EstacionamentoCreate(BaseModel):
     distanciaMetros: Optional[int] = 0
     latitude: Optional[float] = 0.0
     longitude: Optional[float] = 0.0
-
+    geohash: Optional[str] = None
 
     @model_validator(mode="after")
     def normalizar_funcionamento_24h(self):
@@ -120,7 +120,36 @@ class EstacionamentoCreate(BaseModel):
         return self
 
 
-class EstacionamentoSchema(EstacionamentoCreate):
+class VagaInicial(BaseModel):
+    numero: str = Field(..., min_length=1, max_length=100)
+    localizacao: str = Field(default="", max_length=200)
+    preco: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    tipo: Literal["Comum", "IdosoPcd", "Moto", "Carro", "Caminhão"] = "Comum"
+    preferencial: bool = False
+
+    @model_validator(mode="after")
+    def normalizar_vaga(self):
+        self.numero = self.numero.strip()
+        if not self.numero:
+            raise ValueError("Informe o identificador da vaga.")
+        self.localizacao = self.localizacao.strip()
+        self.preferencial = self.preferencial or self.tipo == "IdosoPcd"
+        return self
+
+
+class EstacionamentoCreate(EstacionamentoBase):
+    # Campo exclusivo da requisição de cadastro; não é salvo no estacionamento.
+    vagasIniciais: list[VagaInicial] = Field(default_factory=list, max_length=499)
+
+    @model_validator(mode="after")
+    def validar_identificadores_vagas(self):
+        identificadores = [vaga.numero.casefold() for vaga in self.vagasIniciais]
+        if len(identificadores) != len(set(identificadores)):
+            raise ValueError("Existem vagas com identificadores repetidos.")
+        return self
+
+
+class EstacionamentoSchema(EstacionamentoBase):
     id: Optional[str] = None
     adminEmail: Optional[str] = None
 
@@ -151,6 +180,7 @@ class EstacionamentoUpdate(BaseModel):
     funciona24h: Optional[bool] = None
     horarioAbertura: Optional[str] = None
     horarioFechamento: Optional[str] = None
+    geohash: Optional[str] = None
 
 # --- VAGA ---
 

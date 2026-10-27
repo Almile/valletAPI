@@ -10,7 +10,7 @@ database = db
 
 class AcaoNotificacaoSchema(BaseModel):
     acao: str
-    notificacao_id: str
+    notificacao_id: Optional[str] = None
 
 class APIPayloadSchema(BaseModel):
     acao: Optional[str] = None
@@ -125,16 +125,64 @@ def executar_acao_notificacao(
     usuario_logado: dict = Depends(get_usuario_atual)
 ):
     try:
-        doc_ref = database.collection("notificacoes_admin").document(payload.notificacao_id)
-        
+        if payload.acao == "marcar_todas_como_lidas":
+            estacionamento_id = _obter_estacionamento_id(usuario_logado)
+
+            if not estacionamento_id:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Nenhum estacionamento associado a este usuário."
+                )
+
+            notificacoes = (
+                database.collection("notificacoes_admin")
+                .where("estacionamentoId", "==", estacionamento_id)
+                .stream()
+            )
+
+            quantidade = 0
+
+            for doc in notificacoes:
+                dados = doc.to_dict() or {}
+
+                if not dados.get("lida", False):
+                    doc.reference.update({"lida": True})
+                    quantidade += 1
+
+            return {
+                "success": True,
+                "message": "Todas as notificações foram marcadas como lidas.",
+                "quantidade": quantidade
+            }
+
+        if not payload.notificacao_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Informe o ID da notificação."
+            )
+
+        doc_ref = (
+            database.collection("notificacoes_admin")
+            .document(payload.notificacao_id)
+        )
+
         if payload.acao == "marcar_lida":
             doc_ref.update({"lida": True})
         elif payload.acao == "excluir":
             doc_ref.delete()
         else:
-            doc_ref.update({"lida": True, "statusAcao": payload.acao})
+            doc_ref.update({
+                "lida": True,
+                "statusAcao": payload.acao
+            })
 
-        return {"success": True, "message": "Ação executada com sucesso!"}
+        return {
+            "success": True,
+            "message": "Ação executada com sucesso!"
+        }
+
+    except HTTPException:
+        raise
 
     except Exception as e:
         raise HTTPException(
