@@ -264,3 +264,29 @@ def desativar_conta(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erro ao desativar conta: {str(e)}"
         )
+
+@router.post("/reativar_conta/{uid}", status_code=status.HTTP_200_OK)
+def reativar_conta(
+    uid: str,
+    usuario_logado: dict = Depends(get_usuario_atual)
+):
+    """Reativa uma conta desativada. Apenas superadmin pode executar."""
+    solicitante_uid = usuario_logado.get("uid")
+    solicitante_doc = database.collection("usuario").document(solicitante_uid).get()
+    if not solicitante_doc.exists or solicitante_doc.to_dict().get("tipo_user") != "superadmin":
+        raise HTTPException(status_code=403, detail="Apenas superadmin pode reativar contas.")
+
+    usuario_ref = database.collection("usuario").document(uid)
+    if not usuario_ref.get().exists:
+        raise HTTPException(status_code=404, detail="Usuário alvo não encontrado.")
+
+    try:
+        auth.update_user(uid, disabled=False)
+        usuario_ref.update({
+            "ativo": True,
+            "data_desativacao": None,
+            "desativado_por": None
+        })
+        return {"mensagem": f"Conta do usuário {uid} reativada com sucesso.", "uid": uid}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao reativar conta: {str(e)}")
