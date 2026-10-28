@@ -50,7 +50,7 @@ def criar_estacionamento(
                 detail="Apenas usuários com perfil 'superadmin' podem cadastrar estacionamentos."
             )
 
-            admin_doc = database.collection("usuario").document(estacionamento.adminUid).get()
+        admin_doc = database.collection("usuario").document(estacionamento.adminUid).get()
         if not admin_doc.exists:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
