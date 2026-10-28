@@ -105,7 +105,8 @@ def criar_usuario(
             "cargo": dados.cargo or "",
             "fcm_token": dados.fcm_token,
             "data_criacao": firestore.SERVER_TIMESTAMP,
-            "ultima_atualizacao_token": None
+            "ultima_atualizacao_token": None,
+            "ativo": True
         }
         
         database.collection("usuario").document(dados_usuario.uid).set(payload_firestore)

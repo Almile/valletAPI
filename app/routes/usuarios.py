@@ -38,7 +38,7 @@ def listar_admins_disponiveis(usuario_logado: dict = Depends(get_usuario_atual))
     Lista apenas admins que ainda não estão vinculados a nenhum estacionamento.
     """
     try:
-        admins_docs = database.collection("usuario").where("tipo_user", "in", ["admin", "administrador"]).stream()
+        admins_docs = (database.collection("usuario").where("tipo_user", "in", ["admin", "administrador"]).where("ativo", "!=", False).stream())
         admins = []
         for doc in admins_docs:
             data = doc.to_dict()
