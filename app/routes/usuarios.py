@@ -133,13 +133,17 @@ def atualizar_usuario(
     """
     Atualiza os dados do usuário no Firestore.
     """
-    if uid != usuario_logado.get("uid"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Você não tem permissão para atualizar este usuário."
-        )
 
     try:
+        solicitante_uid = usuario_logado.get("uid")
+        solicitante_doc = database.collection("usuario").document(solicitante_uid).get()
+        solicitante = (solicitante_doc.to_dict() or {}) if solicitante_doc.exists else {}
+
+        if solicitante.get("tipo_user") != "superadmin" and solicitante_uid != uid:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Você não tem permissão para visualizar os dados deste usuário."
+            )
         usuario_ref = database.collection("usuario").document(uid)
         usuario_ref.update(dados.model_dump(exclude_unset=True))
         usuario_atualizado = usuario_ref.get().to_dict()
