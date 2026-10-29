@@ -15,6 +15,7 @@ class UsuarioSchema(BaseModel):
     telefone: Optional[str] = None
     cargo: Optional[str] = None
     fcm_token: Optional[str] = None
+    ativo: bool = True
 
 class UsuarioCreate(UsuarioSchema):
     senha: str = Field(..., min_length=6, examples=["senha123"])
@@ -181,6 +182,7 @@ class EstacionamentoUpdate(BaseModel):
     horarioAbertura: Optional[str] = None
     horarioFechamento: Optional[str] = None
     geohash: Optional[str] = None
+    fotoEstacionamentoUri: Optional[str] = None
 
 # --- VAGA ---
 

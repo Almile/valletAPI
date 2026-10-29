@@ -105,7 +105,8 @@ def criar_usuario(
             "cargo": dados.cargo or "",
             "fcm_token": dados.fcm_token,
             "data_criacao": firestore.SERVER_TIMESTAMP,
-            "ultima_atualizacao_token": None
+            "ultima_atualizacao_token": None,
+            "ativo": True
         }
         
         database.collection("usuario").document(dados_usuario.uid).set(payload_firestore)
@@ -198,3 +199,95 @@ def logout(usuario_logado: dict = Depends(get_usuario_atual)):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erro ao realizar logout: {str(e)}"
         )
+
+@router.post("/desativar_conta/{uid}", status_code=status.HTTP_200_OK)
+def desativar_conta(
+    uid: str,
+    usuario_logado: dict = Depends(get_usuario_atual)
+):
+    """
+    Desativa a conta de um usuário (admin ou motorista) mantendo os dados.
+    Apenas superadmin pode executar esta ação.
+    """
+    solicitante_uid = usuario_logado.get("uid")
+
+    solicitante_doc = database.collection("usuario").document(solicitante_uid).get()
+    if not solicitante_doc.exists:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuário solicitante não encontrado."
+        )
+
+    dados_solicitante = solicitante_doc.to_dict()
+    if dados_solicitante.get("tipo_user") != "superadmin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Apenas superadmin pode desativar contas."
+        )
+
+    usuario_ref = database.collection("usuario").document(uid)
+    usuario_doc = usuario_ref.get()
+    if not usuario_doc.exists:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuário alvo não encontrado."
+        )
+
+    if uid == solicitante_uid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Você não pode desativar sua própria conta."
+        )
+
+    try:
+        # Desativa no Firebase Authentication, bloqueando o login
+        auth.update_user(uid, disabled=True)
+
+        # Marca como desativado no banco
+        usuario_ref.update({
+            "ativo": False,
+            "data_desativacao": firestore.SERVER_TIMESTAMP,
+            "desativado_por": solicitante_uid
+        })
+
+        return {
+            "mensagem": f"Conta do usuário {uid} desativada com sucesso.",
+            "uid": uid
+        }
+
+    except auth.UserNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuário não encontrado no Firebase Authentication."
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro ao desativar conta: {str(e)}"
+        )
+
+@router.post("/reativar_conta/{uid}", status_code=status.HTTP_200_OK)
+def reativar_conta(
+    uid: str,
+    usuario_logado: dict = Depends(get_usuario_atual)
+):
+    """Reativa uma conta desativada. Apenas superadmin pode executar."""
+    solicitante_uid = usuario_logado.get("uid")
+    solicitante_doc = database.collection("usuario").document(solicitante_uid).get()
+    if not solicitante_doc.exists or solicitante_doc.to_dict().get("tipo_user") != "superadmin":
+        raise HTTPException(status_code=403, detail="Apenas superadmin pode reativar contas.")
+
+    usuario_ref = database.collection("usuario").document(uid)
+    if not usuario_ref.get().exists:
+        raise HTTPException(status_code=404, detail="Usuário alvo não encontrado.")
+
+    try:
+        auth.update_user(uid, disabled=False)
+        usuario_ref.update({
+            "ativo": True,
+            "data_desativacao": None,
+            "desativado_por": None
+        })
+        return {"mensagem": f"Conta do usuário {uid} reativada com sucesso.", "uid": uid}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao reativar conta: {str(e)}")
