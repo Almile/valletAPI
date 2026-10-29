@@ -182,6 +182,7 @@ class EstacionamentoUpdate(BaseModel):
     horarioAbertura: Optional[str] = None
     horarioFechamento: Optional[str] = None
     geohash: Optional[str] = None
+    fotoEstacionamentoUri: Optional[str] = None
 
 # --- VAGA ---
 

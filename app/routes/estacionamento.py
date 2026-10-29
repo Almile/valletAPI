@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from app.models.schemas import Endereco, EstacionamentoSchema, EstacionamentoBase, EstacionamentoCreate, EstacionamentoUpdate
 from app.valida_token import get_usuario_atual
 from app.core.firebase import db
@@ -7,7 +7,7 @@ from pydantic import ValidationError
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 import pygeohash as pgh
-
+import cloudinary.uploader
 
 router = APIRouter()
 database = db
@@ -103,6 +103,7 @@ def criar_estacionamento(
                     print(f"Aviso: Endereço não encontrado no mapa: {endereco_str}")
             except (GeocoderTimedOut, GeocoderServiceError) as e:
                 print(f"Erro de geocodificação: {e}")
+
         estacionamento_dict = estacionamento.model_dump(exclude={"vagasIniciais"})
         vagas_iniciais = [vaga.model_dump() for vaga in estacionamento.vagasIniciais]
         estacionamento_dict.update(resumo_vagas(vagas_iniciais))
@@ -131,6 +132,42 @@ def criar_estacionamento(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erro ao criar estacionamento: {str(e)}"
+        )
+
+
+@router.post("/upload_imagem", status_code=status.HTTP_200_OK)
+async def upload_imagem_estacionamento(
+    file: UploadFile = File(...),
+    usuario_logado: dict = Depends(get_usuario_atual)
+):
+    """
+    Faz upload de uma imagem de estacionamento para o Cloudinary.
+    Retorna a URL segura da imagem.
+    """
+    if not file.content_type.startswith("image/"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="O arquivo enviado não é uma imagem."
+        )
+
+    try:
+        resultado = cloudinary.uploader.upload(
+            file.file,
+            folder="vallet/estacionamentos",
+            resource_type="image",
+            transformation=[
+                {"width": 1200, "height": 800, "crop": "limit"},
+                {"quality": "auto"}
+            ]
+        )
+        return {
+            "url": resultado.get("secure_url"),
+            "public_id": resultado.get("public_id")
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro ao fazer upload da imagem: {str(e)}"
         )
 
 @router.get("/buscar_estacionamento/{estacionamento_id}", response_model=EstacionamentoSchema)
