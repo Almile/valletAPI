@@ -5,6 +5,7 @@ from firebase_admin import auth, firestore
 from app.models.schemas import UsuarioCreate, FCMTokenUpdate
 from app.valida_token import get_usuario_atual
 from app.core.firebase import db
+from pydantic import BaseModel, EmailStr
 
 router = APIRouter()
 database = db
@@ -240,10 +241,8 @@ def desativar_conta(
         )
 
     try:
-        # Desativa no Firebase Authentication, bloqueando o login
         auth.update_user(uid, disabled=True)
 
-        # Marca como desativado no banco
         usuario_ref.update({
             "ativo": False,
             "data_desativacao": firestore.SERVER_TIMESTAMP,
@@ -291,3 +290,58 @@ def reativar_conta(
         return {"mensagem": f"Conta do usuário {uid} reativada com sucesso.", "uid": uid}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao reativar conta: {str(e)}")
+
+class PasswordResetRequest(BaseModel):
+    email: EmailStr
+
+@router.post("/recuperar_senha", status_code=status.HTTP_200_OK)
+async def recuperar_senha(dados: PasswordResetRequest):
+    """
+    Envia um e-mail de redefinição de senha utilizando a API REST do Firebase.
+    """
+    api_key = os.getenv("FIREBASE_WEB_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="FIREBASE_WEB_API_KEY não configurada no ambiente."
+        )
+
+    url = f"https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key={api_key}"
+    payload = {
+        "requestType": "PASSWORD_RESET",
+        "email": dados.email
+    }
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(url, json=payload, timeout=10.0)
+            data = response.json()
+        except httpx.RequestError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Erro de conexão com o serviço de autenticação: {exc}"
+            )
+
+    if response.status_code != 200:
+        erro_msg = data.get("error", {}).get("message", "Erro ao enviar e-mail.")
+        
+        if erro_msg == "EMAIL_NOT_FOUND":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="E-mail não encontrado."
+            )
+        elif erro_msg == "OPERATION_NOT_ALLOWED":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="A redefinição de senha está desativada no projeto Firebase."
+            )
+        
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Falha ao solicitar redefinição: {erro_msg}"
+        )
+
+    return {
+        "mensagem": "E-mail de redefinição de senha enviado com sucesso!",
+        "email": data.get("email")
+    }
