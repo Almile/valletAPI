@@ -242,14 +242,6 @@ async def receber_placa_detectada(
             motivo=motivo_admin
         )
 
-        salvar_notificacao_admin(
-            id_vaga=id_vaga,
-            numero_vaga=numero_vaga,
-            id_estacionamento=id_estacionamento,
-            placa=placa,
-            usuario_id=uid_motorista
-        )
-
         if imagem_corte:
             conteudo = await imagem_corte.read()
 
