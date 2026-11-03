@@ -19,14 +19,13 @@ def buscar_token_motorista(placa: str):
             veiculo_doc = db.collection('veiculo').document(placa_clean.lower()).get()
 
         if not veiculo_doc.exists:
-            print(f"⚠️ Veículo {placa_clean} não encontrado no Firestore.")
+            print(f"Veículo {placa_clean} não encontrado no Firestore.")
             return None, None
 
         veiculo_data = veiculo_doc.to_dict()
         usuario_email = (
             veiculo_data.get('usuarioEmail') or 
-            veiculo_data.get('usuario_email') or 
-            veiculo_data.get('emailUsuario')
+            veiculo_data.get('usuario_email')
         )
         
         if not usuario_email:
@@ -47,7 +46,7 @@ def buscar_token_motorista(placa: str):
         
         return token, usuario_doc.id
     except Exception as e:
-        print(f"❌ Erro ao buscar motorista: {e}")
+        print(f"Erro ao buscar motorista: {e}")
         return None, None
 
 
@@ -68,7 +67,7 @@ def buscar_token_admin(id_estacionamento: str):
             
         return None, None
     except Exception as e:
-        print(f"❌ Erro ao buscar admin: {e}")
+        print(f"Erro ao buscar admin: {e}")
         return None, None
 
 
@@ -82,17 +81,16 @@ def verificar_reserva(uid_motorista: str, id_vaga: str) -> bool:
             .limit(1).get()
         return len(reserva_ref) > 0
     except Exception as e:
-        print(f"❌ Erro ao verificar reserva: {e}")
+        print(f"Erro ao verificar reserva: {e}")
         return False
 
 def disparar_notificacao_fcm(token: str, titulo: str, corpo: str, dados: dict, uid_usuario: Optional[str] = None):
-    """Envia notificação via Firebase Cloud Messaging com suporte a pop-up nativo e dados extras."""
+    """Envia notificação via Firebase Cloud Messaging com dados extras."""
     if not token:
         return False
     try:
         safe_dados = {k: str(v) for k, v in (dados or {}).items()}
         
-        # 🔑 Adicionamos a estrutura "notification" e as configurações do Android
         message = messaging.Message(
             notification=messaging.Notification(
                 title=titulo,
@@ -103,7 +101,7 @@ def disparar_notificacao_fcm(token: str, titulo: str, corpo: str, dados: dict, u
                 priority='high',
                 notification=messaging.AndroidNotification(
                     sound='default',
-                    channel_id='default_channel_id', # Ajuste para o ID do canal criado no Android
+                    channel_id='default_channel_id',
                     priority='high',
                     default_sound=True,
                     default_vibrate_timings=True
@@ -113,41 +111,50 @@ def disparar_notificacao_fcm(token: str, titulo: str, corpo: str, dados: dict, u
         )
         
         response = messaging.send(message)
-        print(f"✅ FCM enviado com sucesso: {response}")
+        print(f"FCM enviado com sucesso: {response}")
         return True
 
     except messaging.UnregisteredError:
-        print(f"❌ Token expirado/inválido (NotRegistered) para o usuário UID: {uid_usuario}")
+        print(f"Token expirado/inválido (NotRegistered) para o usuário UID: {uid_usuario}")
         if uid_usuario and isinstance(uid_usuario, str) and uid_usuario.strip():
             try:
                 db.collection('usuario').document(uid_usuario).update({'fcm_token': None})
-                print(f"🧹 Token 'fcm_token' removido estritamente do usuário {uid_usuario}.")
+                print(f"Token 'fcm_token' removido estritamente do usuário {uid_usuario}.")
             except Exception as clean_err:
                 print(f"Erro ao limpar token antigo do usuário {uid_usuario}: {clean_err}")
         return False
 
     except Exception as e:
-        print(f"❌ Erro no envio FCM: {e}")
+        print(f"Erro no envio FCM: {e}")
         return False
 
-
-def salvar_notificacao_admin(id_vaga: str, numero_vaga: str, id_estacionamento: str, placa: str, usuario_id: str):
+def salvar_notificacao_admin(
+    id_vaga: str,
+    numero_vaga: str,
+    id_estacionamento: str,
+    placa: str,
+    usuario_id: str,
+    tipo: str = 'sistema_alerta_estacionamento',
+    motivo: Optional[str] = None,
+    dados_adicionais: Optional[dict] = None
+):
     """Registra notificação na coleção 'notificacoes_admin' no Firestore."""
     try:
         notificacao_data = {
             'vagaId': id_vaga,
             'placa': placa,
             'usuarioId': usuario_id or 'desconhecido',
-            'motivo': f"Veículo {placa} estacionou na Vaga {numero_vaga}",
+            'motivo': motivo or f"Veículo {placa} estacionou na Vaga {numero_vaga}",
             'timestamp': datetime.now(),
-            'tipo': 'sistema_alerta_estacionamento',
+            'tipo': tipo,
             'vagaNumero': numero_vaga,
-            'estacionamentoId': id_estacionamento
+            'estacionamentoId': id_estacionamento,
+            'lida': False,
+            'dadosAdicionais': dados_adicionais or {},
         }
         db.collection('notificacoes_admin').add(notificacao_data)
     except Exception as e:
-        print(f"❌ Erro ao salvar notificação admin no Firestore: {e}")
-
+        print(f"Erro ao salvar notificação admin no Firestore: {e}")
 
 @router.post("/api/v1/eventos/placa-detectada")
 async def receber_placa_detectada(
@@ -162,10 +169,9 @@ async def receber_placa_detectada(
     Endpoint de recepção do pipeline de Visão Computacional.
     Grava ocupação no Firestore e dispara alertas de FCM.
     """
-    print(f"📥 [API] Processando evento: Placa {placa} na Vaga {numero_vaga}")
+    print(f"Processando evento: Placa {placa} na Vaga {numero_vaga}")
 
     try:
-        # 1. ATUALIZAR STATUS DA VAGA
         vaga_ref = db.collection('vaga').document(id_vaga)
         vaga_data = {
             'placa_atual': placa,
@@ -177,7 +183,6 @@ async def receber_placa_detectada(
         }
         vaga_ref.set(vaga_data, merge=True)
 
-        # 2. PROCURAR MOTORISTA E NOTIFICAR VIA FCM (APP)
         token_motorista, uid_motorista = buscar_token_motorista(placa)
         
         if token_motorista and uid_motorista:
@@ -191,26 +196,28 @@ async def receber_placa_detectada(
                     'tipo': 'estacionamento',
                     'usuarioId': uid_motorista
                 },
-                uid_usuario=uid_motorista  # <-- GARANTE QUE SÓ LIMPA ESSE MOTORISTA SE FALHAR
+                uid_usuario=uid_motorista
             )
 
-        # 3. PROCURAR ADMIN E NOTIFICAR VIA FCM (SE O ADMIN TIVER APP)
         token_admin, uid_admin = buscar_token_admin(id_estacionamento)
         
+        tem_reserva = False
+        if uid_motorista:
+            tem_reserva = verificar_reserva(uid_motorista, id_vaga)
+
+        if tem_reserva:
+            tipo_notificacao = 'estacionamento_reservado'
+            titulo_admin   = "Veículo com reserva estacionado"
+            corpo_admin    = f"O veículo reservado {placa} entrou na Vaga {numero_vaga}."
+            motivo_admin   = f"Veículo {placa} com reserva ativa entrou na Vaga {numero_vaga}."
+        else:
+            tipo_notificacao = 'estacionamento_sem_reserva'
+            titulo_admin   = "Veículo sem reserva estacionado"
+            corpo_admin    = f"Veículo {placa} estacionou na Vaga {numero_vaga}."
+            motivo_admin   = f"Veículo {placa} estacionou na Vaga {numero_vaga} sem reserva ativa."
+
+        token_admin, uid_admin = buscar_token_admin(id_estacionamento)
         if token_admin and uid_admin:
-            tem_reserva = False
-            if uid_motorista:
-                tem_reserva = verificar_reserva(uid_motorista, id_vaga)
-
-            if tem_reserva:
-                titulo_admin = "Reserva Confirmada"
-                corpo_admin = f"O veículo reservado {placa} entrou na Vaga {numero_vaga}."
-                tipo_notificacao = 'reserva'
-            else:
-                titulo_admin = "Veículo Estacionado"
-                corpo_admin = f"Veículo {placa} estacionou na Vaga {numero_vaga}."
-                tipo_notificacao = 'estacionamento'
-
             disparar_notificacao_fcm(
                 token=token_admin,
                 titulo=titulo_admin,
@@ -222,10 +229,19 @@ async def receber_placa_detectada(
                     'usuarioId': uid_motorista or 'desconhecido',
                     'vagaNumero': numero_vaga
                 },
-                uid_usuario=uid_admin  # <-- GARANTE QUE SÓ LIMPA ESSE ADMIN SE FALHAR
+                uid_usuario=uid_admin
             )
 
-        # 4. SALVAR REGISTRO PARA O PAINEL DJANGO DO ADMIN
+        salvar_notificacao_admin(
+            id_vaga=id_vaga,
+            numero_vaga=numero_vaga,
+            id_estacionamento=id_estacionamento,
+            placa=placa,
+            usuario_id=uid_motorista,
+            tipo=tipo_notificacao,
+            motivo=motivo_admin
+        )
+
         salvar_notificacao_admin(
             id_vaga=id_vaga,
             numero_vaga=numero_vaga,
@@ -245,5 +261,5 @@ async def receber_placa_detectada(
         }
 
     except Exception as e:
-        print(f"🚨 Erro no processamento da API: {e}")
+        print(f"Erro no processamento da API: {e}")
         raise HTTPException(status_code=500, detail=str(e))
