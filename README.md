@@ -42,6 +42,18 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 O servidor estará rodando em: http://localhost:8000
 
+### 6. Índices do Firestore
+As consultas ordenadas de notificações e a soma de receita do dashboard usam
+índices compostos definidos em `firestore.indexes.json`. Para criá-los no
+projeto Firebase:
+
+```bash
+firebase deploy --only firestore:indexes
+```
+
+Sem os índices, a API continua funcionando com consultas de fallback, porém
+com mais leituras do Firestore.
+
 ### 📂 Estrutura de Pastas
 app/main.py: Onde o servidor "nasce" e as rotas são registradas.
 

@@ -1,12 +1,55 @@
 from datetime import datetime, time
 from typing import Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status
+from google.cloud.firestore import Query as FirestoreQuery
+from google.cloud.firestore_v1.base_query import FieldFilter
 from app.valida_token import get_usuario_atual
 from app.core.firebase import db
+from app.core.agregacoes import contar, somar
 from app.core.vagas_resumo import resumo_vagas_por_consulta
 
 router = APIRouter()
 database = db
+
+STATUS_PENDENTES = ("ativa", "pendente", "agendada", "confirmada")
+STATUS_CANCELADAS = ("cancelada", "cancelado")
+STATUS_RECEITA = ("concluida", "finalizada", "ativa", "confirmada")
+
+
+def _data_reserva(dados: dict):
+    """Normaliza ``dataCriacao``/``inicioReserva`` para um datetime sem fuso."""
+    raw = dados.get("dataCriacao") or dados.get("inicioReserva")
+
+    if hasattr(raw, "to_datetime"):
+        raw = raw.to_datetime()
+
+    if isinstance(raw, datetime):
+        if raw.tzinfo is not None:
+            raw = raw.replace(tzinfo=None)
+        return raw
+
+    return None
+
+
+def _somar_receita(consulta) -> float:
+    """Soma ``valorTotal`` usando agregação.
+
+    Enquanto o índice composto de receita não existir no projeto, o Firestore
+    recusa a agregação. Nesse caso caímos para a leitura apenas das reservas
+    filtradas, preservando o valor exibido no dashboard.
+    """
+    try:
+        return somar(consulta, "valorTotal")
+    except Exception as exc:
+        print(
+            "[DASHBOARD] Agregação de receita indisponível; "
+            f"usando fallback ({type(exc).__name__})."
+        )
+
+        total = 0.0
+        for doc in consulta.stream():
+            total += float((doc.to_dict() or {}).get("valorTotal", 0.0) or 0.0)
+        return total
 
 
 def _buscar_documentos_por_id(colecao: str, ids) -> Dict[str, dict]:
@@ -34,7 +77,12 @@ def obter_dashboard_estacionamento(
     try:
         # 1. Identificação do estacionamento
         if not id_estacionamento or id_estacionamento.strip() == "":
-            est_docs = database.collection("estacionamento").where("adminUid", "==", uid).limit(1).stream()
+            est_docs = (
+                database.collection("estacionamento")
+                .where(filter=FieldFilter("adminUid", "==", uid))
+                .limit(1)
+                .stream()
+            )
             est_lista = [doc for doc in est_docs]
             
             if not est_lista:
@@ -69,71 +117,60 @@ def obter_dashboard_estacionamento(
         vagas_ocupadas = max(0, vagas_total - vagas_disponiveis)
 
         # 3. Métricas de Reservas
+        # Contagens e somas usam agregações do Firestore. Apenas as 5 reservas
+        # mais recentes são lidas como documentos.
         hoje_inicio = datetime.combine(datetime.now().date(), time.min)
         hoje_fim = datetime.combine(datetime.now().date(), time.max)
 
-        reservas_ref = database.collection("reserva").where("estacionamentoId", "==", id_estacionamento)
-        reservas_docs = list(reservas_ref.stream())
+        reservas_ref = database.collection("reserva").where(
+            filter=FieldFilter("estacionamentoId", "==", id_estacionamento)
+        )
 
-        reservas_hoje = 0
-        reservas_pendentes = 0
-        reservas_canceladas = 0
-        receita_total = 0.0
-        receita_cancelada_total = 0.0
+        reservas_hoje = contar(
+            reservas_ref
+            .where(filter=FieldFilter("inicioReserva", ">=", hoje_inicio))
+            .where(filter=FieldFilter("inicioReserva", "<=", hoje_fim))
+        )
+
+        reservas_pendentes = contar(
+            reservas_ref.where(
+                filter=FieldFilter("status", "in", list(STATUS_PENDENTES))
+            )
+        )
+
+        consulta_canceladas = reservas_ref.where(
+            filter=FieldFilter("status", "in", list(STATUS_CANCELADAS))
+        )
+        reservas_canceladas = contar(consulta_canceladas)
+        receita_cancelada_total = _somar_receita(consulta_canceladas)
+
+        consulta_receita = reservas_ref.where(
+            filter=FieldFilter("status", "in", list(STATUS_RECEITA))
+        )
+        receita_total = _somar_receita(consulta_receita)
+
+        ultimos_docs = list(
+            reservas_ref
+            .order_by("inicioReserva", direction=FirestoreQuery.DESCENDING)
+            .limit(5)
+            .stream()
+        )
+
         ultimas_reservas = []
 
-        for doc in reservas_docs:
+        for doc in ultimos_docs:
             res_data = doc.to_dict() or {}
-            res_id = doc.id
-            
-            # Normaliza o status garantindo que não quebre por None ou espaços
             status_reserva = str(res_data.get("status", "")).strip().lower()
-            
-            # Tratamento da data
-            raw_data = res_data.get("dataCriacao") or res_data.get("inicioReserva")
-            dt_obj = None
-
-            if hasattr(raw_data, "to_datetime"):
-                dt_obj = raw_data.to_datetime()
-            elif isinstance(raw_data, datetime):
-                dt_obj = raw_data
-
-            if dt_obj and dt_obj.tzinfo is not None:
-                dt_obj = dt_obj.replace(tzinfo=None)
-
-            # 1. Checa se foi criada hoje
-            if dt_obj and hoje_inicio <= dt_obj <= hoje_fim:
-                reservas_hoje += 1
-
-            # 2. Contagem flexível por status
-            if status_reserva in ["ativa", "pendente", "agendada", "confirmada"]:
-                reservas_pendentes += 1
-            elif status_reserva in ["cancelada", "cancelado"]:
-                reservas_canceladas += 1
-                receita_cancelada_total += float(res_data.get("valorTotal", 0.0) or 0.0)
-
-            if status_reserva in ["concluida", "finalizada", "ativa", "confirmada"]:
-                receita_total += float(res_data.get("valorTotal", 0.0) or 0.0)
-
-            usuario_id = res_data.get("usuarioId")
-            vaga_id = res_data.get("vagaId")
+            dt_obj = _data_reserva(res_data)
 
             ultimas_reservas.append({
-                "id": res_id,
+                "id": doc.id,
                 "status": status_reserva.capitalize(),
                 "valor": f"{float(res_data.get('valorTotal', 0.0) or 0.0):,.2f}".replace(".", ","),
                 "inicioReserva": dt_obj.isoformat() if dt_obj else "",
-                "_dt_sort": dt_obj or datetime.min,
-                "_usuario_id": usuario_id,
-                "_vaga_id": vaga_id,
+                "_usuario_id": res_data.get("usuarioId"),
+                "_vaga_id": res_data.get("vagaId"),
             })
-
-        # Ordena com fallback de segurança e pega as 5 mais recentes
-        ultimas_reservas = sorted(
-            ultimas_reservas, 
-            key=lambda x: x["_dt_sort"], 
-            reverse=True
-        )[:5]
 
         usuarios = _buscar_documentos_por_id(
             "usuario",
@@ -153,7 +190,6 @@ def obter_dashboard_estacionamento(
 
             r["usuario"] = usuario.get("nome") or usuario.get("email") or "N/A"
             r["nome_vaga_completo"] = vaga.get("numero") or "N/A"
-            r.pop("_dt_sort", None)
 
         return {
             "id_estacionamento": id_estacionamento,
