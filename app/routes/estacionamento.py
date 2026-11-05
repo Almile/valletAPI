@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from app.models.schemas import Endereco, EstacionamentoSchema, EstacionamentoBase, EstacionamentoCreate, EstacionamentoUpdate
 from app.valida_token import get_usuario_atual
 from app.core.firebase import db
+from app.core.vagas_resumo import resumo_vagas, resumo_vagas_por_consulta
 from firebase_admin import firestore
 from pydantic import ValidationError
 from geopy.geocoders import Nominatim
@@ -13,22 +14,13 @@ router = APIRouter()
 database = db
 geolocator = Nominatim(user_agent="vallet_projeto_app")
 
-def resumo_vagas(vagas):
-    preferenciais = sum(1 for vaga in vagas if vaga.get("preferencial") or vaga.get("tipo") == "IdosoPcd")
-    return {
-        "quantidadeVagasTotal": len(vagas),
-        "vagasDisponiveis": sum(1 for vaga in vagas if vaga.get("disponivel", True)),
-        "quantidadeVagasComum": len(vagas) - preferenciais,
-        "quantidadeVagasIdosoPcd": preferenciais,
-        "tiposVagasComum": len(vagas) > preferenciais,
-        "tiposVagasIdosoPcd": preferenciais > 0,
-    }
-
-
 def atualizar_resumo_resposta(dados, estacionamento_id):
-    vagas = [doc.to_dict() for doc in database.collection("vaga")
-             .where("estacionamentoId", "==", estacionamento_id).stream()]
-    dados.update(resumo_vagas(vagas))
+    """Inclui o resumo de vagas sem ler todos os documentos da coleção.
+
+    A versão anterior fazia ``stream()`` em todas as vagas do estacionamento
+    a cada listagem, o que era o principal consumidor de leituras do Firestore.
+    """
+    dados.update(resumo_vagas_por_consulta(estacionamento_id))
     return dados
 
 

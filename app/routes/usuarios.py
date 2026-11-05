@@ -9,7 +9,7 @@ router = APIRouter()
 database = db
 
 
-def _usuario_com_estacionamento(uid: str, dados: dict) -> dict:
+def _usuario_com_estacionamento(uid: str, dados: dict, mapa_por_id=None, mapa_por_admin=None) -> dict:
     """
     Inclui o ID e o nome do estacionamento vinculado ao usuário.
     """
@@ -17,20 +17,46 @@ def _usuario_com_estacionamento(uid: str, dados: dict) -> dict:
     resultado["uid"] = resultado.get("uid") or uid
 
     if resultado.get("tipo_user") in ("admin", "administrador"):
-        est_docs = database.collection("estacionamento").where("adminUid", "==", uid).limit(1).stream()
-        for est_doc in est_docs:
-            est_data = est_doc.to_dict() or {}
-            resultado["estacionamentoId"] = est_doc.id
-            resultado["estacionamentoNome"] = est_data.get("nome")
-            break
+        if mapa_por_admin is not None:
+            vinculado = mapa_por_admin.get(uid)
+            if vinculado:
+                resultado["estacionamentoId"], resultado["estacionamentoNome"] = vinculado
+        else:
+            est_docs = database.collection("estacionamento").where("adminUid", "==", uid).limit(1).stream()
+            for est_doc in est_docs:
+                est_data = est_doc.to_dict() or {}
+                resultado["estacionamentoId"] = est_doc.id
+                resultado["estacionamentoNome"] = est_data.get("nome")
+                break
 
     elif resultado.get("estacionamentoId"):
-        estacionamento_id = resultado["estacionamentoId"]
-        est_doc = database.collection("estacionamento").document(str(estacionamento_id)).get()
-        if est_doc.exists:
-            resultado["estacionamentoNome"] = (est_doc.to_dict() or {}).get("nome")
+        estacionamento_id = str(resultado["estacionamentoId"])
+        if mapa_por_id is not None:
+            if estacionamento_id in mapa_por_id:
+                resultado["estacionamentoNome"] = mapa_por_id[estacionamento_id]
+        else:
+            est_doc = database.collection("estacionamento").document(estacionamento_id).get()
+            if est_doc.exists:
+                resultado["estacionamentoNome"] = (est_doc.to_dict() or {}).get("nome")
 
     return resultado
+
+
+def _mapa_estacionamentos():
+    """Carrega os estacionamentos uma única vez para evitar N+1.
+    """
+    por_id = {}
+    por_admin = {}
+
+    for doc in database.collection("estacionamento").stream():
+        dados = doc.to_dict() or {}
+        por_id[doc.id] = dados.get("nome")
+
+        admin_uid = dados.get("adminUid")
+        if admin_uid and admin_uid not in por_admin:
+            por_admin[admin_uid] = (doc.id, dados.get("nome"))
+
+    return por_id, por_admin
 
 @router.get("/listar_admins_disponiveis")
 def listar_admins_disponiveis(usuario_logado: dict = Depends(get_usuario_atual)):
@@ -72,9 +98,16 @@ def listar_usuarios(
         usuarios_ref = database.collection("usuario")
         docs = usuarios_ref.where("tipo_user", "==", tipo).stream() if tipo else usuarios_ref.stream()
 
+        mapa_por_id, mapa_por_admin = _mapa_estacionamentos()
+
         lista_usuarios = []
         for doc in docs:
-            dados = _usuario_com_estacionamento(doc.id, doc.to_dict() or {})
+            dados = _usuario_com_estacionamento(
+                doc.id,
+                doc.to_dict() or {},
+                mapa_por_id=mapa_por_id,
+                mapa_por_admin=mapa_por_admin,
+            )
             lista_usuarios.append(UsuarioResponse(**dados))
         return lista_usuarios
     except Exception as e:

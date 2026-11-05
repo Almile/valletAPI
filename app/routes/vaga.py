@@ -4,6 +4,7 @@ from firebase_admin import firestore
 from app.models.schemas import Vaga, VagaCreate, VagaUpdate, VagasLoteCreate
 from app.valida_token import get_usuario_atual
 from app.core.firebase import db
+from app.core.vagas_resumo import sincronizar_resumo
 
 router = APIRouter()
 database = db
@@ -22,6 +23,7 @@ def criar_vaga(
         dados_vaga["id"] = nova_vaga_ref.id
 
         nova_vaga_ref.set(dados_vaga)
+        sincronizar_resumo(dados_vaga.get("estacionamentoId"))
         return Vaga(**dados_vaga)
 
     except Exception as e:
@@ -61,6 +63,7 @@ def criar_vagas_em_lote(
             vagas_criadas.append(vaga_data)
 
         batch.commit()
+        sincronizar_resumo(dados_lote.estacionamentoId)
         
         return [Vaga(**v) for v in vagas_criadas]
 
@@ -126,6 +129,8 @@ def editar_vaga(
         if "id" not in vaga_atualizada:
             vaga_atualizada["id"] = vaga_id
 
+        sincronizar_resumo(vaga_atualizada.get("estacionamentoId"))
+
         return Vaga(**vaga_atualizada)
 
     except HTTPException:
@@ -155,7 +160,9 @@ def excluir_vaga(
                 detail="Vaga não encontrada."
             )
 
+        estacionamento_id = (doc.to_dict() or {}).get("estacionamentoId")
         vaga_ref.delete()
+        sincronizar_resumo(estacionamento_id)
         return None
 
     except HTTPException:

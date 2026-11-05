@@ -3,9 +3,24 @@ from typing import Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from app.valida_token import get_usuario_atual
 from app.core.firebase import db
+from app.core.vagas_resumo import resumo_vagas_por_consulta
 
 router = APIRouter()
 database = db
+
+
+def _buscar_documentos_por_id(colecao: str, ids) -> Dict[str, dict]:
+    """Busca vários documentos em lote e devolve um mapa {id: dados}."""
+    ids = [str(i) for i in ids if i]
+    if not ids:
+        return {}
+
+    referencias = [database.collection(colecao).document(i) for i in ids]
+    resultado = {}
+    for doc in database.get_all(referencias):
+        if doc.exists:
+            resultado[doc.id] = doc.to_dict() or {}
+    return resultado
 
 
 @router.get("/{id_estacionamento}/dashboard")
@@ -39,9 +54,18 @@ def obter_dashboard_estacionamento(
 
         dados_est = doc_estacionamento.to_dict() or {}
 
-        # 2. Leitura de Vagas
-        vagas_total = dados_est.get("quantidadeVagasTotal", 0)
-        vagas_disponiveis = dados_est.get("vagasDisponiveis", vagas_total)
+        try:
+            resumo_vagas = resumo_vagas_por_consulta(id_estacionamento)
+        except Exception as exc:
+            print(f"Erro ao agregar vagas do estacionamento {id_estacionamento}: {exc}")
+            resumo_vagas = {}
+
+        vagas_total = resumo_vagas.get(
+            "quantidadeVagasTotal", dados_est.get("quantidadeVagasTotal", 0)
+        )
+        vagas_disponiveis = resumo_vagas.get(
+            "vagasDisponiveis", dados_est.get("vagasDisponiveis", vagas_total)
+        )
         vagas_ocupadas = max(0, vagas_total - vagas_disponiveis)
 
         # 3. Métricas de Reservas
@@ -92,35 +116,16 @@ def obter_dashboard_estacionamento(
                 receita_total += float(res_data.get("valorTotal", 0.0) or 0.0)
 
             usuario_id = res_data.get("usuarioId")
-            nome_usuario = "N/A"
-            if usuario_id:
-                try:
-                    user_doc = database.collection("usuario").document(usuario_id).get()
-                    if user_doc.exists:
-                        user_data = user_doc.to_dict()
-                        nome_usuario = user_data.get("nome") or user_data.get("email") or "N/A"
-                except Exception as e:
-                    print(f"Erro ao buscar usuário {usuario_id}: {e}")
-
             vaga_id = res_data.get("vagaId")
-            numero_vaga = "N/A"
-            if vaga_id:
-                try:
-                    vaga_doc = database.collection("vaga").document(vaga_id).get()
-                    if vaga_doc.exists:
-                        vaga_data = vaga_doc.to_dict()
-                        numero_vaga = vaga_data.get("numero") or "N/A"
-                except Exception as e:
-                    print(f"Erro ao buscar vaga {vaga_id}: {e}")
 
             ultimas_reservas.append({
                 "id": res_id,
-                "usuario": nome_usuario,
-                "nome_vaga_completo": numero_vaga,
                 "status": status_reserva.capitalize(),
                 "valor": f"{float(res_data.get('valorTotal', 0.0) or 0.0):,.2f}".replace(".", ","),
                 "inicioReserva": dt_obj.isoformat() if dt_obj else "",
-                "_dt_sort": dt_obj or datetime.min
+                "_dt_sort": dt_obj or datetime.min,
+                "_usuario_id": usuario_id,
+                "_vaga_id": vaga_id,
             })
 
         # Ordena com fallback de segurança e pega as 5 mais recentes
@@ -130,8 +135,24 @@ def obter_dashboard_estacionamento(
             reverse=True
         )[:5]
 
-        # Limpa o campo auxiliar de ordenação da resposta
+        usuarios = _buscar_documentos_por_id(
+            "usuario",
+            {r.get("_usuario_id") for r in ultimas_reservas if r.get("_usuario_id")},
+        )
+        vagas = _buscar_documentos_por_id(
+            "vaga",
+            {r.get("_vaga_id") for r in ultimas_reservas if r.get("_vaga_id")},
+        )
+
         for r in ultimas_reservas:
+            usuario_id = r.pop("_usuario_id", None)
+            vaga_id = r.pop("_vaga_id", None)
+
+            usuario = usuarios.get(usuario_id) or {}
+            vaga = vagas.get(vaga_id) or {}
+
+            r["usuario"] = usuario.get("nome") or usuario.get("email") or "N/A"
+            r["nome_vaga_completo"] = vaga.get("numero") or "N/A"
             r.pop("_dt_sort", None)
 
         return {
