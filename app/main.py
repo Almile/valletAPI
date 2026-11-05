@@ -31,3 +31,9 @@ app.include_router(vaga.router, prefix="/vaga", tags=["Vaga"],dependencies=[Depe
 @app.get("/")
 def home():
     return {"message": "API Vallet"}
+
+
+@app.get("/health", tags=["Infra"])
+def health():
+    """Verificação leve de disponibilidade (não consome leituras do Firestore)."""
+    return {"status": "ok"}

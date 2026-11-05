@@ -1,3 +1,4 @@
+import time
 from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -15,6 +16,11 @@ database = db
 # mesmo quando o estacionamento acumular milhares de notificações.
 TETO_LISTA = 200
 TETO_FALLBACK = 500
+
+# Quando o índice composto ainda não existe, evita repetir a tentativa e o
+# aviso no log a cada carregamento. O fallback continua sendo usado.
+_aviso_indice_ate = 0.0
+INTERVALO_AVISO_INDICE = 600
 
 
 class AcaoNotificacaoSchema(BaseModel):
@@ -73,20 +79,26 @@ def _carregar_notificacoes(estacionamento_id: str, teto: int = TETO_LISTA):
     projeto ainda não tiver esse índice, caímos para uma consulta global
     ordenada e limitada, filtrando o estacionamento em memória.
     """
+    global _aviso_indice_ate
+
     if estacionamento_id:
-        try:
-            return list(
-                _consulta_base(estacionamento_id)
-                .order_by("timestamp", direction=FirestoreQuery.DESCENDING)
-                .limit(teto)
-                .stream()
-            )
-        except Exception as exc:
-            print(
-                "[NOTIFICACOES] Índice composto indisponível; "
-                "usando consulta limitada de fallback "
-                f"({type(exc).__name__})."
-            )
+        agora = time.monotonic()
+
+        if agora >= _aviso_indice_ate:
+            try:
+                return list(
+                    _consulta_base(estacionamento_id)
+                    .order_by("timestamp", direction=FirestoreQuery.DESCENDING)
+                    .limit(teto)
+                    .stream()
+                )
+            except Exception as exc:
+                _aviso_indice_ate = agora + INTERVALO_AVISO_INDICE
+                print(
+                    "[NOTIFICACOES] Índice composto indisponível; "
+                    "usando consulta limitada de fallback "
+                    f"({type(exc).__name__})."
+                )
 
     limite_global = TETO_FALLBACK if estacionamento_id else teto
     docs = list(

@@ -1,3 +1,4 @@
+import time as _time
 from datetime import datetime, time
 from typing import Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -14,6 +15,11 @@ database = db
 STATUS_PENDENTES = ("ativa", "pendente", "agendada", "confirmada")
 STATUS_CANCELADAS = ("cancelada", "cancelado")
 STATUS_RECEITA = ("concluida", "finalizada", "ativa", "confirmada")
+
+# Evita repetir a agregação que falha e o aviso no log a cada dashboard
+# enquanto o índice composto de receita não for criado.
+_aviso_receita_ate = 0.0
+INTERVALO_AVISO_RECEITA = 600
 
 
 def _data_reserva(dados: dict):
@@ -38,18 +44,24 @@ def _somar_receita(consulta) -> float:
     recusa a agregação. Nesse caso caímos para a leitura apenas das reservas
     filtradas, preservando o valor exibido no dashboard.
     """
-    try:
-        return somar(consulta, "valorTotal")
-    except Exception as exc:
-        print(
-            "[DASHBOARD] Agregação de receita indisponível; "
-            f"usando fallback ({type(exc).__name__})."
-        )
+    global _aviso_receita_ate
 
-        total = 0.0
-        for doc in consulta.stream():
-            total += float((doc.to_dict() or {}).get("valorTotal", 0.0) or 0.0)
-        return total
+    agora = _time.monotonic()
+
+    if agora >= _aviso_receita_ate:
+        try:
+            return somar(consulta, "valorTotal")
+        except Exception as exc:
+            _aviso_receita_ate = agora + INTERVALO_AVISO_RECEITA
+            print(
+                "[DASHBOARD] Agregação de receita indisponível; "
+                f"usando fallback ({type(exc).__name__})."
+            )
+
+    total = 0.0
+    for doc in consulta.stream():
+        total += float((doc.to_dict() or {}).get("valorTotal", 0.0) or 0.0)
+    return total
 
 
 def _buscar_documentos_por_id(colecao: str, ids) -> Dict[str, dict]:
