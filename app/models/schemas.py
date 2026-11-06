@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, EmailStr, computed_field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, EmailStr, SecretStr, computed_field, model_validator
 from typing import Optional, Literal, Union
 from datetime import datetime
 
@@ -21,11 +21,34 @@ class UsuarioCreate(UsuarioSchema):
     senha: str = Field(..., min_length=6, examples=["senha123"])
 
 class UsuarioUpdate(BaseModel):
-    nome: Optional[str] = None
+    model_config = ConfigDict(extra="forbid")
+
+    nome: Optional[str] = Field(default=None, min_length=1)
+    email: Optional[EmailStr] = None
+    # Apenas entrada: nunca incluir senha no model_dump destinado ao Firestore.
+    senha: Optional[SecretStr] = Field(default=None, min_length=6, max_length=128, exclude=True, repr=False)
     telefone: Optional[str] = None
     cnh: Optional[str] = None
     fotoPerfil: Optional[str] = None
     cargo: Optional[str] = None
+    estacionamentoId: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validar_atualizacao(self):
+        for campo in ("nome", "email", "senha"):
+            if campo in self.model_fields_set and getattr(self, campo) is None:
+                raise ValueError(f"O campo {campo} não pode ser nulo.")
+        if self.nome is not None:
+            self.nome = self.nome.strip()
+            if not self.nome:
+                raise ValueError("O nome não pode ficar vazio.")
+        if self.estacionamentoId is not None:
+            self.estacionamentoId = self.estacionamentoId.strip()
+            if "/" in self.estacionamentoId:
+                raise ValueError("Identificador de estacionamento inválido.")
+            self.estacionamentoId = self.estacionamentoId or None
+        return self
+
 
 class UsuarioResponse(UsuarioSchema):
     uid: str
