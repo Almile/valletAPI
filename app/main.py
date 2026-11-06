@@ -2,6 +2,8 @@ from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from app.routes import auth,usuarios, estacionamento, veiculo, pagamento, admin,reserva, notificacoes, camera,vaga
 from fastapi.security import HTTPBearer
+import asyncio
+from contextlib import asynccontextmanager
 
 security = HTTPBearer()
 
@@ -37,3 +39,15 @@ def home():
 def health():
     """Verificação leve de disponibilidade (não consome leituras do Firestore)."""
     return {"status": "ok"}
+
+# @asynccontextmanager
+# async def lifespan(app: FastAPI):
+#     tarefas = [
+#         asyncio.create_task(camera.monitorar_leitores()),
+#         asyncio.create_task(camera.monitorar_pagamentos()),
+#     ]
+#     yield
+#     for t in tarefas:
+#         t.cancel()
+
+# app = FastAPI(lifespan=lifespan)

@@ -161,7 +161,7 @@ def listar_notificacoes_page(
     data_inicio: Optional[str] = Query(""),
     data_fim: Optional[str] = Query(""),
     apenas_nao_lidas: Optional[str] = Query(""),
-    usuario_logado: dict = Depends(get_usuario_atual)
+    usuario_logado: dict = Depends(get_usuario_atual),
 ):
     try:
         estacionamento_id = _obter_estacionamento_id(usuario_logado)
@@ -218,6 +218,7 @@ def listar_notificacoes_page(
                 "tipo": n_tipo,
                 "placa": n_placa or "—",
                 "vaga_numero": n.get("vagaNumero") or n.get("numeroVaga") or "—",
+                "imagem": n.get("imagem"),
                 "lida": lida,
                 "data": dt_criacao.strftime("%d/%m/%Y %H:%M") if dt_criacao else "—",
             })
