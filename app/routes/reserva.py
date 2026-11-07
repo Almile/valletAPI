@@ -1,28 +1,33 @@
-from datetime import datetime
+from datetime import datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
+import logging
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from google.cloud.firestore import Query as FirestoreQuery
+from google.cloud.firestore_v1.base_query import FieldFilter
+from google.api_core.exceptions import AlreadyExists, FailedPrecondition
 from app.valida_token import get_usuario_atual
 from app.core.firebase import db
 
 router = APIRouter()
 database = db
+FUSO_RESERVAS = ZoneInfo("America/Sao_Paulo")
+_logger = logging.getLogger(__name__)
 
 
 def _data(valor):
-    if isinstance(valor, datetime):
-        return valor
-
     if hasattr(valor, "to_datetime"):
-        return valor.to_datetime()
-
-    if valor:
+        valor = valor.to_datetime()
+    if isinstance(valor, str):
         try:
-            return datetime.fromisoformat(str(valor))
+            valor = datetime.fromisoformat(valor.replace("Z", "+00:00"))
         except ValueError:
-            pass
-
-    return None
+            return None
+    if not isinstance(valor, datetime):
+        return None
+    if valor.tzinfo is None:
+        valor = valor.replace(tzinfo=timezone.utc)
+    return valor.astimezone(FUSO_RESERVAS)
 
 
 @router.get("/")
@@ -54,6 +59,12 @@ def listar_reservas_estacionamento(
             status_code=400,
             detail="Informe as datas no formato AAAA-MM-DD."
         )
+
+    if inicio_filtro and fim_filtro and inicio_filtro > fim_filtro:
+        raise HTTPException(status_code=400, detail="A data inicial deve ser anterior ou igual à final.")
+
+    if fim_filtro and fim_filtro.year == 9999 and fim_filtro.month == 12 and fim_filtro.day == 31:
+        raise HTTPException(status_code=400, detail="Data final fora do intervalo permitido.")
 
     try:
         if (
@@ -113,12 +124,18 @@ def listar_reservas_estacionamento(
             else FirestoreQuery.DESCENDING
         )
 
-        consulta = (
-            referencia
-            .where("estacionamentoId", "==", id_estacionamento)
-            .order_by("inicioReserva", direction=sentido)
-            .order_by("__name__", direction=sentido)
-        )
+        consulta = referencia.where(filter=FieldFilter("estacionamentoId", "==", id_estacionamento))
+        if inicio_filtro:
+            inicio = datetime.combine(inicio_filtro, time.min, tzinfo=FUSO_RESERVAS)
+            consulta = consulta.where(filter=FieldFilter(
+                "inicioReserva", ">=", inicio.astimezone(timezone.utc)
+            ))
+        if fim_filtro:
+            fim_exclusivo = datetime.combine(fim_filtro + timedelta(days=1), time.min, tzinfo=FUSO_RESERVAS)
+            consulta = consulta.where(filter=FieldFilter(
+                "inicioReserva", "<", fim_exclusivo.astimezone(timezone.utc)
+            ))
+        consulta = consulta.order_by("inicioReserva", direction=sentido).order_by("__name__", direction=sentido)
 
         posicao = None
 
@@ -259,15 +276,6 @@ def listar_reservas_estacionamento(
                 inicio = _data(r.get("inicioReserva"))
                 fim = _data(r.get("fimReserva"))
 
-                if inicio_filtro and (
-                    inicio is None or inicio.date() < inicio_filtro
-                ):
-                    continue
-
-                if fim_filtro and (
-                    fim is None or fim.date() > fim_filtro
-                ):
-                    continue
 
                 item = None
 
@@ -348,6 +356,10 @@ def listar_reservas_estacionamento(
     except HTTPException:
         raise
 
+    except FailedPrecondition as erro:
+        _logger.exception("[RESERVAS] Confira o índice estacionamentoId/inicioReserva no Firestore.")
+        raise HTTPException(status_code=503, detail="Consulta indisponível. Confira o índice de reservas no terminal da API.") from erro
+
     except Exception as erro:
         print(f"[RESERVAS] Erro ao consultar reservas: {erro}")
 
@@ -358,3 +370,66 @@ def listar_reservas_estacionamento(
                 "Confira o terminal da API."
             )
         )
+
+@router.post("/{reserva_id}/notificar-inicio")
+def notificar_inicio_reserva(
+    reserva_id: str,
+    usuario_logado: dict = Depends(get_usuario_atual),
+):
+    """Registra o início na central do gestor; chamadas repetidas não duplicam o evento."""
+    uid = usuario_logado.get("uid")
+    if not uid:
+        raise HTTPException(status_code=401, detail="Usuário não identificado.")
+    try:
+        reserva_doc = database.collection("reserva").document(reserva_id).get()
+        if not reserva_doc.exists:
+            raise HTTPException(status_code=404, detail="Reserva não encontrada.")
+        reserva = reserva_doc.to_dict() or {}
+        if reserva.get("usuarioId") != uid:
+            raise HTTPException(status_code=403, detail="Sem acesso a esta reserva.")
+        estacionamento_id = reserva.get("estacionamentoId")
+        vaga_id = reserva.get("vagaId")
+        inicio = _data(reserva.get("inicioReserva"))
+        if not estacionamento_id or not vaga_id or inicio is None:
+            raise HTTPException(status_code=409, detail="Reserva sem vínculo ou data de início válidos.")
+        # Timestamp.now() do app usa o relógio do aparelho; tolera pequeno desvio.
+        if inicio > datetime.now(FUSO_RESERVAS) + timedelta(seconds=60):
+            raise HTTPException(status_code=409, detail="Esta reserva ainda não foi iniciada.")
+        estacionamento = database.collection("estacionamento").document(estacionamento_id).get()
+        if not estacionamento.exists:
+            raise HTTPException(status_code=404, detail="Estacionamento não encontrado.")
+        vaga_doc = database.collection("vaga").document(vaga_id).get()
+        if not vaga_doc.exists:
+            raise HTTPException(status_code=404, detail="Vaga não encontrada.")
+        vaga = vaga_doc.to_dict() or {}
+        if vaga.get("estacionamentoId") != estacionamento_id:
+            raise HTTPException(status_code=409, detail="A vaga não pertence ao estacionamento da reserva.")
+        numero = str(vaga.get("numero") or vaga_id)
+        notificacao_id = f"reserva_iniciada_{reserva_id}"
+        referencia = database.collection("notificacoes_admin").document(notificacao_id)
+        dados = {
+            "tipo": "reserva_iniciada",
+            "titulo": "Reserva iniciada",
+            "mensagem": f"Uma reserva foi iniciada na vaga {numero}.",
+            "motivo": f"Uma reserva foi iniciada na vaga {numero}.",
+            "estacionamentoId": estacionamento_id,
+            "vagaId": vaga_id,
+            "vagaNumero": numero,
+            "usuarioId": uid,
+            "reservaId": reserva_id,
+            "placa": str(reserva.get("placa") or ""),
+            "timestamp": inicio.astimezone(timezone.utc),
+            "lida": False,
+        }
+        try:
+            referencia.create(dados)
+            criada = True
+        except AlreadyExists:
+            criada = False
+        _logger.info("[RESERVA INICIADA] reserva=%s criada=%s", reserva_id, criada)
+        return {"notificacao_id": notificacao_id, "criada": criada}
+    except HTTPException:
+        raise
+    except Exception as erro:
+        _logger.exception("[RESERVA INICIADA] Falha ao registrar evento reserva=%s", reserva_id)
+        raise HTTPException(status_code=503, detail="Não foi possível registrar a notificação de início.") from erro
