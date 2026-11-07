@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, BackgroundTasks, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
@@ -173,43 +173,21 @@ def salvar_notificacao_admin(
     except Exception as e:
         print(f"Erro ao salvar notificação admin no Firestore: {e}")
 
-@router.post("/api/v1/eventos/placa-detectada")
-async def receber_placa_detectada(
-    id_estacionamento: str = Form(...),
-    id_vaga: str = Form(...),
-    numero_vaga: str = Form(...),
-    placa: str = Form(...),
-    confianca: float = Form(...),
-    imagem_corte: UploadFile = File(None)
-):
-    """
-    Endpoint de recepção do pipeline de Visão Computacional.
-    Grava ocupação no Firestore e dispara alertas de FCM.
-    """
-    print(f"Processando evento: Placa {placa} na Vaga {numero_vaga}")
+def processar_entrada_em_segundo_plano(id_estacionamento: str, id_vaga: str,
+                                       numero_vaga: str, placa: str,
+                                       conteudo_imagem: Optional[bytes]):
+    """Cloudinary, consultas e FCM fora do caminho crítico da resposta.
 
+    A vaga já foi gravada quando esta função roda; o leitor e os dashboards
+    veem a mudança imediatamente, sem esperar upload de imagem ou notificação.
+    """
     try:
         url_imagem = None
-        if imagem_corte:
-            conteudo = await imagem_corte.read()
-            if conteudo:
-                url_imagem = await asyncio.to_thread(
-                    enviar_imagem_cloudinary, conteudo, f"{id_vaga}_{placa}"
-                )
-
-        vaga_ref = db.collection('vaga').document(id_vaga)
-        vaga_data = {
-            'placa_atual': placa,
-            'ocupada': True,
-            'status': 'OCUPADA',
-            'numero': numero_vaga,
-            'id_estacionamento': id_estacionamento,
-            'ultima_atualizacao': datetime.now()
-        }
-        vaga_ref.set(vaga_data, merge=True)
+        if conteudo_imagem:
+            url_imagem = enviar_imagem_cloudinary(conteudo_imagem, f"{id_vaga}_{placa}")
 
         token_motorista, uid_motorista = buscar_token_motorista(placa)
-        
+
         if token_motorista and uid_motorista:
             disparar_notificacao_fcm(
                 token=token_motorista,
@@ -224,39 +202,69 @@ async def receber_placa_detectada(
                 uid_usuario=uid_motorista
             )
 
-        token_admin, uid_admin = buscar_token_admin(id_estacionamento)
-        
         tem_reserva = False
         if uid_motorista:
             tem_reserva = verificar_reserva(uid_motorista, id_vaga)
 
         if tem_reserva:
             tipo_notificacao = 'estacionamento_reservado'
-            titulo_admin   = "Veículo com reserva estacionado"
             corpo_admin    = f"O veículo reservado {placa} entrou na Vaga {numero_vaga}."
             motivo_admin   = f"Veículo {placa} com reserva ativa entrou na Vaga {numero_vaga}."
         else:
             tipo_notificacao = 'estacionamento_sem_reserva'
-            titulo_admin   = "Veículo sem reserva estacionado"
             corpo_admin    = f"Veículo {placa} estacionou na Vaga {numero_vaga}."
             motivo_admin   = f"Veículo {placa} estacionou na Vaga {numero_vaga} sem reserva ativa."
 
-        token_admin, uid_admin = buscar_token_admin(id_estacionamento)
-        
         notificar_admin(
             id_estacionamento, tipo_notificacao, corpo_admin, motivo=motivo_admin,
             id_vaga=id_vaga, numero_vaga=numero_vaga, placa=placa,
             usuario_id=uid_motorista, imagem=url_imagem
         )
+    except Exception as e:
+        print(f"Erro no processamento em segundo plano da entrada: {e}")
 
+
+@router.post("/api/v1/eventos/placa-detectada")
+async def receber_placa_detectada(
+    background_tasks: BackgroundTasks,
+    id_estacionamento: str = Form(...),
+    id_vaga: str = Form(...),
+    numero_vaga: str = Form(...),
+    placa: str = Form(...),
+    confianca: float = Form(...),
+    imagem_corte: UploadFile = File(None),
+    notificar: bool = Form(True),
+):
+    """
+    Endpoint de recepção do pipeline de Visão Computacional.
+    Grava a ocupação imediatamente e deixa imagem/notificações em background.
+    """
+    print(f"Processando evento: Placa {placa} na Vaga {numero_vaga}")
+
+    try:
+        conteudo = None
         if imagem_corte:
             conteudo = await imagem_corte.read()
+
+        db.collection('vaga').document(id_vaga).set({
+            'placa_atual': placa,
+            'ocupada': True,
+            'status': 'OCUPADA',
+            'numero': numero_vaga,
+            'id_estacionamento': id_estacionamento,
+            'ultima_atualizacao': datetime.now()
+        }, merge=True)
+
+        if notificar:
+            background_tasks.add_task(
+                processar_entrada_em_segundo_plano,
+                id_estacionamento, id_vaga, numero_vaga, placa, conteudo
+            )
 
         return {
             "status": "sucesso",
             "mensagem": f"Evento processado para a placa {placa}.",
-            "vaga": numero_vaga,
-            "motorista_notificado": bool(token_motorista)
+            "vaga": numero_vaga
         }
 
     except Exception as e:
@@ -294,19 +302,9 @@ def notificar_admin(id_estacionamento: str, tipo: str, corpo: str, motivo: Optio
         dados_adicionais=dados_adicionais, imagem=imagem
     )
 
-@router.post("/api/v1/eventos/saida-detectada")
-async def receber_saida_detectada(
-    id_estacionamento: str = Form(...),
-    id_vaga: str = Form(...),
-    numero_vaga: str = Form(...),
-    placa: str = Form(...),
-):
+def processar_saida_em_segundo_plano(id_estacionamento: str, id_vaga: str,
+                                     numero_vaga: str, placa: str):
     try:
-        db.collection('vaga').document(id_vaga).set({
-            'placa_atual': None, 'ocupada': False, 'status': 'LIVRE',
-            'ultima_atualizacao': datetime.now()
-        }, merge=True)
-
         _, uid_motorista = buscar_token_motorista(placa)
         notificar_admin(
             id_estacionamento, "alerta_saida",
@@ -314,6 +312,30 @@ async def receber_saida_detectada(
             motivo=f"Veículo {placa} deixou a Vaga {numero_vaga}.",
             id_vaga=id_vaga, numero_vaga=numero_vaga, placa=placa, usuario_id=uid_motorista
         )
+    except Exception as e:
+        print(f"Erro no processamento em segundo plano da saída: {e}")
+
+
+@router.post("/api/v1/eventos/saida-detectada")
+async def receber_saida_detectada(
+    background_tasks: BackgroundTasks,
+    id_estacionamento: str = Form(...),
+    id_vaga: str = Form(...),
+    numero_vaga: str = Form(...),
+    placa: str = Form(...),
+    notificar: bool = Form(True),
+):
+    try:
+        db.collection('vaga').document(id_vaga).set({
+            'placa_atual': None, 'ocupada': False, 'status': 'LIVRE',
+            'ultima_atualizacao': datetime.now()
+        }, merge=True)
+
+        if notificar:
+            background_tasks.add_task(
+                processar_saida_em_segundo_plano,
+                id_estacionamento, id_vaga, numero_vaga, placa
+            )
         return {"status": "sucesso", "vaga": numero_vaga}
     except Exception as e:
         print(f"Erro ao processar saída: {e}")
@@ -330,7 +352,10 @@ async def receber_alerta_sistema(
 ):
     if tipo not in TIPOS_ALERTA_SISTEMA:
         raise HTTPException(status_code=400, detail=f"tipo inválido: {tipo}")
-    notificar_admin(id_estacionamento, tipo, corpo=motivo, id_vaga=id_vaga, numero_vaga=numero_vaga)
+    await asyncio.to_thread(
+        notificar_admin, id_estacionamento, tipo,
+        motivo, id_vaga=id_vaga, numero_vaga=numero_vaga
+    )
     return {"status": "sucesso", "tipo": tipo}
 
 HEARTBEAT_TIMEOUT_S = 120
