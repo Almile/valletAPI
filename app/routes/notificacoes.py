@@ -1,5 +1,7 @@
-import time
-from datetime import datetime
+import logging
+from datetime import datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
+from google.api_core.exceptions import FailedPrecondition
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from google.cloud.firestore import Query as FirestoreQuery
@@ -15,13 +17,8 @@ database = db
 # A lista nunca carrega a coleção inteira. O teto mantém a página previsível
 # mesmo quando o estacionamento acumular milhares de notificações.
 TETO_LISTA = 200
-TETO_FALLBACK = 500
-
-# Quando o índice composto ainda não existe, evita repetir a tentativa e o
-# aviso no log a cada carregamento. O fallback continua sendo usado.
-_aviso_indice_ate = 0.0
-INTERVALO_AVISO_INDICE = 600
-
+FUSO_NOTIFICACOES = ZoneInfo("America/Sao_Paulo")
+_logger = logging.getLogger(__name__)
 
 class AcaoNotificacaoSchema(BaseModel):
     acao: str
@@ -51,12 +48,11 @@ def _obter_estacionamento_id(usuario_logado: dict, id_header: Optional[str] = No
 def _consulta_base(estacionamento_id: str):
     colecao = database.collection("notificacoes_admin")
 
-    if estacionamento_id:
-        return colecao.where(
-            filter=FieldFilter("estacionamentoId", "==", estacionamento_id)
-        )
-
-    return colecao
+    if not estacionamento_id:
+        raise HTTPException(status_code=404, detail="Nenhum estacionamento associado a este usuário.")
+    return colecao.where(
+        filter=FieldFilter("estacionamentoId", "==", estacionamento_id)
+    )
 
 
 def _resumo_notificacoes(estacionamento_id: str):
@@ -72,66 +68,65 @@ def _resumo_notificacoes(estacionamento_id: str):
     return total, max(0, total - lidas)
 
 
-def _carregar_notificacoes(estacionamento_id: str, teto: int = TETO_LISTA):
-    """Carrega no máximo ``teto`` notificações, das mais recentes para as antigas.
-
-    O caminho ideal usa o índice composto (estacionamentoId, timestamp). Se o
-    projeto ainda não tiver esse índice, caímos para uma consulta global
-    ordenada e limitada, filtrando o estacionamento em memória.
-    """
-    global _aviso_indice_ate
-
-    if estacionamento_id:
-        agora = time.monotonic()
-
-        if agora >= _aviso_indice_ate:
-            try:
-                return list(
-                    _consulta_base(estacionamento_id)
-                    .order_by("timestamp", direction=FirestoreQuery.DESCENDING)
-                    .limit(teto)
-                    .stream()
-                )
-            except Exception as exc:
-                _aviso_indice_ate = agora + INTERVALO_AVISO_INDICE
-                print(
-                    "[NOTIFICACOES] Índice composto indisponível; "
-                    "usando consulta limitada de fallback "
-                    f"({type(exc).__name__})."
-                )
-
-    limite_global = TETO_FALLBACK if estacionamento_id else teto
-    docs = list(
-        database.collection("notificacoes_admin")
-        .order_by("timestamp", direction=FirestoreQuery.DESCENDING)
-        .limit(limite_global)
-        .stream()
-    )
-
-    if estacionamento_id:
-        docs = [
-            doc
-            for doc in docs
-            if str((doc.to_dict() or {}).get("estacionamentoId") or "") == estacionamento_id
-        ]
-
-    return docs[:teto]
+def _carregar_notificacoes(
+    estacionamento_id: str,
+    teto: int = TETO_LISTA,
+    dt_ini=None,
+    dt_fim=None,
+):
+    """Filtra estacionamento e intervalo no Firestore antes de limitar a leitura."""
+    consulta = _consulta_base(estacionamento_id)
+    if dt_ini:
+        inicio = datetime.combine(dt_ini, time.min, tzinfo=FUSO_NOTIFICACOES)
+        consulta = consulta.where(filter=FieldFilter(
+            "timestamp", ">=", inicio.astimezone(timezone.utc)
+        ))
+    if dt_fim:
+        fim = datetime.combine(dt_fim + timedelta(days=1), time.min, tzinfo=FUSO_NOTIFICACOES)
+        consulta = consulta.where(filter=FieldFilter(
+            "timestamp", "<", fim.astimezone(timezone.utc)
+        ))
+    try:
+        return list(
+            consulta.order_by("timestamp", direction=FirestoreQuery.DESCENDING)
+            .limit(teto)
+            .stream()
+        )
+    except FailedPrecondition as exc:
+        # Sem consulta global de fallback: ela podia esconder avisos deste gestor.
+        _logger.exception("[NOTIFICACOES] Confira o índice estacionamentoId/timestamp no Firestore.")
+        raise HTTPException(
+            status_code=503,
+            detail="Índice de notificações indisponível. Confira o terminal da API e firestore.indexes.json.",
+        ) from exc
 
 
 def _data_notificacao(dados: dict):
     valor = dados.get("timestamp") or dados.get("dataCriacao") or dados.get("criadoEm")
-
     if hasattr(valor, "to_datetime"):
-        return valor.to_datetime()
-
+        valor = valor.to_datetime()
     if isinstance(valor, str):
         try:
-            return datetime.fromisoformat(valor)
+            valor = datetime.fromisoformat(valor.replace("Z", "+00:00"))
         except ValueError:
             return None
+    if not isinstance(valor, datetime):
+        return None
+    # Firestore armazena timestamps em UTC, inclusive nos registros antigos sem tzinfo.
+    if valor.tzinfo is None:
+        valor = valor.replace(tzinfo=timezone.utc)
+    return valor.astimezone(FUSO_NOTIFICACOES)
 
-    return valor if isinstance(valor, datetime) else None
 
+def _ler_intervalo(data_inicio, data_fim):
+    try:
+        inicio = datetime.strptime(data_inicio, "%Y-%m-%d").date() if data_inicio else None
+        fim = datetime.strptime(data_fim, "%Y-%m-%d").date() if data_fim else None
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Use datas no formato AAAA-MM-DD.") from exc
+    if inicio and fim and inicio > fim:
+        raise HTTPException(status_code=422, detail="A data inicial não pode ser posterior à final.")
+    return inicio, fim
 
 @router.get("/resumo/")
 def resumo_notificacoes(
@@ -147,6 +142,8 @@ def resumo_notificacoes(
             "nao_lidas": nao_lidas,
             "id_estacionamento": estacionamento_id,
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -164,22 +161,14 @@ def listar_notificacoes_page(
     usuario_logado: dict = Depends(get_usuario_atual),
 ):
     try:
+        dt_ini, dt_fim = _ler_intervalo(data_inicio, data_fim)
         estacionamento_id = _obter_estacionamento_id(usuario_logado)
         total, nao_lidas = _resumo_notificacoes(estacionamento_id)
-        docs = _carregar_notificacoes(estacionamento_id)
+        docs = _carregar_notificacoes(estacionamento_id, dt_ini=dt_ini, dt_fim=dt_fim)
 
         tipo_busca = (tipo or "").strip().lower()
         placa_busca = (placa or "").strip().upper()
         somente_nao_lidas = apenas_nao_lidas in ["on", "true", "1"]
-
-        dt_ini = (
-            datetime.strptime(data_inicio, "%Y-%m-%d").date()
-            if data_inicio else None
-        )
-        dt_fim = (
-            datetime.strptime(data_fim, "%Y-%m-%d").date()
-            if data_fim else None
-        )
 
         lista = []
         tipos_set = set()

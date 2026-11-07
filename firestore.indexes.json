@@ -59,6 +59,20 @@
           "order": "ASCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "reserva",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "estacionamentoId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "inicioReserva",
+          "order": "DESCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": []
