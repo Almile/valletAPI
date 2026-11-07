@@ -66,7 +66,7 @@ class VeiculoCreate(BaseModel):
     padrao: bool = False
     ano: int
     cor: str
-    tipo: Literal["Moto", "Carro", "Caminhão"]
+    tipo: Literal["Moto", "Carro"]
 
 class VeiculoResponse(VeiculoCreate):
     id: Optional[str] = None
@@ -144,11 +144,34 @@ class EstacionamentoBase(BaseModel):
         return self
 
 
-class VagaInicial(BaseModel):
+class TipoVagaBase(BaseModel):
+    @model_validator(mode="before")
+    @classmethod
+    def normalizar_tipo_vaga(cls, dados):
+        if not isinstance(dados, dict) or "tipo" not in dados:
+            return dados
+        dados = dict(dados)
+        if not isinstance(dados["tipo"], str) or not dados["tipo"].strip():
+            raise ValueError("Informe um tipo de vaga válido.")
+        tipo = dados["tipo"].strip().casefold()
+        chave = tipo.replace(" ", "").replace("_", "").replace("/", "").replace("-", "")
+        if chave in ("comum", "carro"):
+            dados["tipo"] = "carro"
+        elif chave == "moto":
+            dados["tipo"] = "moto"
+        elif chave in ("preferencial", "idosopcd", "pcd", "idoso"):
+            dados["tipo"] = "carro"
+            dados["preferencial"] = True
+        # Tipos antigos desconhecidos permanecem legíveis no modelo de resposta.
+        # Os modelos de entrada restringem os novos cadastros a carro/moto.
+        return dados
+
+
+class VagaInicial(TipoVagaBase):
     numero: str = Field(..., min_length=1, max_length=100)
     localizacao: str = Field(default="", max_length=200)
     preco: float = Field(default=0.0, ge=0, allow_inf_nan=False)
-    tipo: Literal["Comum", "IdosoPcd", "Moto", "Carro", "Caminhão"] = "Comum"
+    tipo: Literal["carro", "moto"] = "carro"
     preferencial: bool = False
 
     @model_validator(mode="after")
@@ -157,7 +180,6 @@ class VagaInicial(BaseModel):
         if not self.numero:
             raise ValueError("Informe o identificador da vaga.")
         self.localizacao = self.localizacao.strip()
-        self.preferencial = self.preferencial or self.tipo == "IdosoPcd"
         return self
 
 
@@ -209,40 +231,40 @@ class EstacionamentoUpdate(BaseModel):
 
 # --- VAGA ---
 
-class Vaga(BaseModel):
+class Vaga(TipoVagaBase):
     id: Optional[str] = None
     numero: str
     localizacao: str = ""
     preco: float = 0.0
-    tipo: str = "Carro"
+    tipo: str = "carro"
     preferencial: bool = False
     disponivel: bool = True
     estacionamentoId: str
 
 # --- SCHEMAS AUXILIARES PARA VAGAS ---
 
-class VagaCreate(BaseModel):
+class VagaCreate(TipoVagaBase):
     numero: str
     localizacao: Optional[str] = ""
     preco: Optional[float] = 0.0
-    tipo: str = "Carro"
+    tipo: Literal["carro", "moto"] = "carro"
     preferencial: bool = False
     disponivel: bool = True
     estacionamentoId: str
 
-class VagaUpdate(BaseModel):
+class VagaUpdate(TipoVagaBase):
     numero: Optional[str] = None
     localizacao: Optional[str] = None
     preco: Optional[float] = None
-    tipo: str = "Carro"
+    tipo: Optional[Literal["carro", "moto"]] = None
     preferencial: Optional[bool] = None
     disponivel: Optional[bool] = None
 
-class VagasLoteCreate(BaseModel):
+class VagasLoteCreate(TipoVagaBase):
     estacionamentoId: str
     quantidade: int = Field(..., gt=0, description="Quantidade de vagas a gerar")
     prefixo: Optional[str] = Field("A-", description="Prefixo para o número da vaga, ex: A-1, A-2")
-    tipo: str = "Carro"
+    tipo: Literal["carro", "moto"] = "carro"
     preco: Optional[float] = 0.0
     preferencial: bool = False
     localizacao: Optional[str] = ""

@@ -122,6 +122,10 @@ def editar_vaga(
             )
 
         novos_dados = dados.model_dump(exclude_unset=True)
+        if "tipo" in novos_dados or "preferencial" in novos_dados:
+            combinado = Vaga(**{**(doc.to_dict() or {}), **novos_dados, "id": vaga_id})
+            novos_dados["tipo"] = combinado.tipo
+            novos_dados["preferencial"] = combinado.preferencial
         if novos_dados:
             vaga_ref.update(novos_dados)
 
