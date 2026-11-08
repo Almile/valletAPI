@@ -1,4 +1,5 @@
-from pydantic import BaseModel, ConfigDict, Field, EmailStr, SecretStr, computed_field, model_validator
+from decimal import Decimal
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, EmailStr, SecretStr, computed_field, model_validator
 from typing import Optional, Literal, Union
 from datetime import datetime
 
@@ -304,8 +305,9 @@ class LeituraPlacaSchema(BaseModel):
 # --- ---------------- PAGAMENTO ------------------------
 
 class RequisicaoPagamento(BaseModel):
-    valor: float
-    metodo: str
-    numero_cartao: str | None = None
-    usuario_id: str | None = None
-    reserva_id: str  
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    valor: Decimal = Field(gt=0, max_digits=12, decimal_places=2, allow_inf_nan=False)
+    metodo: Literal["pix"] = "pix"
+    numero_cartao: str | None = Field(default=None, exclude=True)
+    usuario_id: str | None = Field(default=None, validation_alias=AliasChoices("usuario_id", "usuarioId"))
+    reserva_id: str = Field(min_length=1, max_length=1500, pattern=r"^[^/]+$", validation_alias=AliasChoices("reserva_id", "reservaId"))
