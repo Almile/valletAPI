@@ -42,29 +42,6 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 O servidor estará rodando em: http://localhost:8000
 
-### 6. Índices do Firestore
-As consultas ordenadas de notificações e a soma de receita do dashboard usam
-índices compostos definidos em `firestore.indexes.json`. Para criá-los no
-projeto Firebase:
-
-```bash
-firebase deploy --only firestore:indexes
-```
-
-Sem os índices, a API continua funcionando com consultas de fallback, porém
-com mais leituras do Firestore.
-
-### 7. Eventos da câmera (tempo real)
-Os endpoints `/camera/api/v1/eventos/placa-detectada` e
-`/camera/api/v1/eventos/saida-detectada` gravam o estado da vaga **antes** de
-qualquer trabalho pesado. Upload para o Cloudinary, consulta de motorista/admin
-e envio de FCM rodam em segundo plano; o leitor recebe a resposta na hora e o
-Firestore já reflete a mudança para web, desktop e aplicativo.
-
-Os dois endpoints aceitam o campo opcional `notificar` (padrão `true`). O
-ValletIOT envia `notificar=false` na sincronização inicial para atualizar vagas
-que já estavam ocupadas sem gerar notificações duplicadas.
-
 ### 📂 Estrutura de Pastas
 app/main.py: Onde o servidor "nasce" e as rotas são registradas.
 

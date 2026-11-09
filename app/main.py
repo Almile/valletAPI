@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from app.routes import auth,usuarios, estacionamento, veiculo, pagamento, admin,reserva, notificacoes, camera,vaga
+from app.routes import auth,usuarios, estacionamento, veiculo, pagamento, admin,reserva, notificacoes, camera,vaga, chat
 from fastapi.security import HTTPBearer
 import asyncio
 from contextlib import asynccontextmanager
@@ -29,6 +29,7 @@ app.include_router(reserva.router, prefix="/reserva", tags=["Reserva"],dependenc
 app.include_router(notificacoes.router, prefix="/notificacoes", tags=["Notificações"],dependencies=[Depends(security)])
 app.include_router(camera.router, prefix="/camera", tags=["Câmera"])
 app.include_router(vaga.router, prefix="/vaga", tags=["Vaga"],dependencies=[Depends(security)])
+app.include_router(chat.router, prefix="/chat", tags=["Chat"],dependencies=[Depends(security)])
 
 @app.get("/")
 def home():
