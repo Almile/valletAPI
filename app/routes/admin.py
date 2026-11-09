@@ -142,31 +142,45 @@ def _consultar_reservas_periodo(id_estacionamento, inicio, fim, agora):
     }
     contagens = dict.fromkeys(rotulos, 0)
     por_dia = OrderedDict()
+    faturamento_por_dia = OrderedDict()
+    
     dia = inicio.date()
     while dia < fim.date():
-        por_dia[dia.isoformat()] = {"total": 0, **dict.fromkeys(rotulos, 0)}
+        data_str = dia.isoformat()
+        por_dia[data_str] = {"total": 0, **dict.fromkeys(rotulos, 0)}
+        faturamento_por_dia[data_str] = 0.0
         dia += timedelta(days=1)
 
-    # Os limites são aplicados no Firestore, antes de qualquer leitura.
-    # A projeção reduz os dados transferidos; não reduz as leituras cobradas.
     consulta = (
         database.collection("reserva")
         .where(filter=FieldFilter("estacionamentoId", "==", id_estacionamento))
         .where(filter=FieldFilter("inicioReserva", ">=", inicio.astimezone(timezone.utc)))
         .where(filter=FieldFilter("inicioReserva", "<", fim.astimezone(timezone.utc)))
         .order_by("inicioReserva")
-        .select(["inicioReserva", "fimReserva", "status"])
+        .select(["inicioReserva", "fimReserva", "status", "valorTotal"])
     )
+    
+    faturamento_total = 0.0
+
     for documento in consulta.stream(retry=None, timeout=30):
         dados = documento.to_dict() or {}
         data = _data_dashboard(dados.get("inicioReserva"))
         if data is None or not inicio <= data < fim:
             continue
+            
         situacao = _situacao_dashboard(dados, agora)
         contagens[situacao] += 1
-        linha = por_dia[data.date().isoformat()]
+        
+        data_str = data.date().isoformat()
+        linha = por_dia[data_str]
         linha["total"] += 1
         linha[situacao] += 1
+
+        # Acumula o faturamento da reserva (se houver valor registrado)
+        valor_reserva = float(dados.get("valorTotal", 0.0) or 0.0)
+        faturamento_total += valor_reserva
+        if data_str in faturamento_por_dia:
+            faturamento_por_dia[data_str] += valor_reserva
 
     return {
         "id_estacionamento": id_estacionamento,
@@ -177,10 +191,17 @@ def _consultar_reservas_periodo(id_estacionamento, inicio, fim, agora):
             "fuso": "America/Sao_Paulo",
             "campo_data": "inicioReserva",
         },
-        "resumo": {"total": sum(contagens.values()), **contagens},
+        "resumo": {
+            "total": sum(contagens.values()),
+            "faturamento_total": round(faturamento_total, 2),
+            **contagens
+        },
         "graficos": {
             "reservas_por_dia": [
                 {"data": data, **contagem} for data, contagem in por_dia.items()
+            ],
+            "faturamento_por_dia": [
+                {"data": data, "valor": round(val, 2)} for data, val in faturamento_por_dia.items()
             ],
             "situacao_reservas": [
                 {"status": estado, "rotulo": rotulo, "total": contagens[estado]}
@@ -195,7 +216,6 @@ def _consultar_reservas_periodo(id_estacionamento, inicio, fim, agora):
         },
         "gerado_em": agora.isoformat(),
     }
-
 
 def _reservas_com_cache(id_estacionamento, inicio, fim):
     chave = (id_estacionamento, inicio.isoformat(), fim.isoformat())
