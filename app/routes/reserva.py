@@ -9,7 +9,27 @@ from google.api_core.exceptions import AlreadyExists, FailedPrecondition
 from app.valida_token import get_usuario_atual
 from app.core.firebase import db
 
+from app.cancelamento import executar_cancelamento
+
 router = APIRouter()
+
+
+@router.post("/{reserva_id}/cancelar")
+def cancelar_reserva(reserva_id: str, vaga_id: str = Query(..., min_length=1, pattern=r"^[^/]+$"),
+                     usuario_logado: dict = Depends(get_usuario_atual)):
+    uid = usuario_logado.get("uid")
+    if not uid:
+        raise HTTPException(401, "Usuário não identificado.")
+    if not reserva_id or "/" in reserva_id:
+        raise HTTPException(400, "Identificador de reserva inválido.")
+    try:
+        return executar_cancelamento(database.transaction(), database, reserva_id, uid, vaga_id)
+    except HTTPException:
+        raise
+    except Exception as erro:
+        _logger.exception("Falha ao cancelar reserva")
+        raise HTTPException(503, "Não foi possível confirmar o cancelamento. Tente novamente.") from erro
+
 database = db
 FUSO_RESERVAS = ZoneInfo("America/Sao_Paulo")
 _logger = logging.getLogger(__name__)
