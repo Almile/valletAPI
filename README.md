@@ -1,11 +1,13 @@
-# valletAPI
-API desenvolvida para conectar aplicações de diferentes plataformas com o banco de dados
+<div align="center">
+   <img height="200" alt="VALLET_logo" src="https://github.com/user-attachments/assets/c016879c-235f-423f-b553-08cb60cf02e3" />
+</div>
+API desenvolvida para centralizar aplicações de diferentes plataformas com o banco de dados
 
-## 🛠️ Pré-requisitos
+## Pré-requisitos
 1. Ter o **Python 3.10+** instalado.
 2. Ter o **VS Code** instalado.
 
-## 🏃 Como rodar o projeto
+## Como rodar o projeto
 
 Abra o terminal na pasta do projeto e siga estes passos:
 
@@ -18,14 +20,16 @@ python -m venv venv
 ```bash
 # Windows: 
 venv\Scripts\activate
+```
+```bash
 # Linux/Mac: 
 source venv/bin/activate
 ```
-
-### 3. Instalar as bibliotecas
+### 2. Instalar as dependencias 
 ```bash
 pip install -r requirements.txt
 ```
+
 ### 4. Configuração de Credenciais
 1. Coloque o arquivo `serviceAccountKey.json` em `app/core/`.
 2. Crie um arquivo `.env` na raiz do projeto utilize o arquivo `.env.example` como base.
