@@ -1,4 +1,5 @@
-from pydantic import BaseModel, Field, EmailStr, computed_field, model_validator
+from decimal import Decimal
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, EmailStr, SecretStr, computed_field, model_validator
 from typing import Optional, Literal, Union
 from datetime import datetime
 
@@ -21,11 +22,34 @@ class UsuarioCreate(UsuarioSchema):
     senha: str = Field(..., min_length=6, examples=["senha123"])
 
 class UsuarioUpdate(BaseModel):
-    nome: Optional[str] = None
+    model_config = ConfigDict(extra="forbid")
+
+    nome: Optional[str] = Field(default=None, min_length=1)
+    email: Optional[EmailStr] = None
+    # Apenas entrada: nunca incluir senha no model_dump destinado ao Firestore.
+    senha: Optional[SecretStr] = Field(default=None, min_length=6, max_length=128, exclude=True, repr=False)
     telefone: Optional[str] = None
     cnh: Optional[str] = None
     fotoPerfil: Optional[str] = None
     cargo: Optional[str] = None
+    estacionamentoId: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validar_atualizacao(self):
+        for campo in ("nome", "email", "senha"):
+            if campo in self.model_fields_set and getattr(self, campo) is None:
+                raise ValueError(f"O campo {campo} não pode ser nulo.")
+        if self.nome is not None:
+            self.nome = self.nome.strip()
+            if not self.nome:
+                raise ValueError("O nome não pode ficar vazio.")
+        if self.estacionamentoId is not None:
+            self.estacionamentoId = self.estacionamentoId.strip()
+            if "/" in self.estacionamentoId:
+                raise ValueError("Identificador de estacionamento inválido.")
+            self.estacionamentoId = self.estacionamentoId or None
+        return self
+
 
 class UsuarioResponse(UsuarioSchema):
     uid: str
@@ -43,7 +67,7 @@ class VeiculoCreate(BaseModel):
     padrao: bool = False
     ano: int
     cor: str
-    tipo: Literal["Moto", "Carro", "Caminhão"]
+    tipo: Literal["Moto", "Carro"]
 
 class VeiculoResponse(VeiculoCreate):
     id: Optional[str] = None
@@ -121,11 +145,34 @@ class EstacionamentoBase(BaseModel):
         return self
 
 
-class VagaInicial(BaseModel):
+class TipoVagaBase(BaseModel):
+    @model_validator(mode="before")
+    @classmethod
+    def normalizar_tipo_vaga(cls, dados):
+        if not isinstance(dados, dict) or "tipo" not in dados:
+            return dados
+        dados = dict(dados)
+        if not isinstance(dados["tipo"], str) or not dados["tipo"].strip():
+            raise ValueError("Informe um tipo de vaga válido.")
+        tipo = dados["tipo"].strip().casefold()
+        chave = tipo.replace(" ", "").replace("_", "").replace("/", "").replace("-", "")
+        if chave in ("comum", "carro"):
+            dados["tipo"] = "carro"
+        elif chave == "moto":
+            dados["tipo"] = "moto"
+        elif chave in ("preferencial", "idosopcd", "pcd", "idoso"):
+            dados["tipo"] = "carro"
+            dados["preferencial"] = True
+        # Tipos antigos desconhecidos permanecem legíveis no modelo de resposta.
+        # Os modelos de entrada restringem os novos cadastros a carro/moto.
+        return dados
+
+
+class VagaInicial(TipoVagaBase):
     numero: str = Field(..., min_length=1, max_length=100)
     localizacao: str = Field(default="", max_length=200)
     preco: float = Field(default=0.0, ge=0, allow_inf_nan=False)
-    tipo: Literal["Comum", "IdosoPcd", "Moto", "Carro", "Caminhão"] = "Comum"
+    tipo: Literal["carro", "moto"] = "carro"
     preferencial: bool = False
 
     @model_validator(mode="after")
@@ -134,7 +181,6 @@ class VagaInicial(BaseModel):
         if not self.numero:
             raise ValueError("Informe o identificador da vaga.")
         self.localizacao = self.localizacao.strip()
-        self.preferencial = self.preferencial or self.tipo == "IdosoPcd"
         return self
 
 
@@ -186,40 +232,40 @@ class EstacionamentoUpdate(BaseModel):
 
 # --- VAGA ---
 
-class Vaga(BaseModel):
+class Vaga(TipoVagaBase):
     id: Optional[str] = None
     numero: str
     localizacao: str = ""
     preco: float = 0.0
-    tipo: str = "Carro"
+    tipo: str = "carro"
     preferencial: bool = False
     disponivel: bool = True
     estacionamentoId: str
 
 # --- SCHEMAS AUXILIARES PARA VAGAS ---
 
-class VagaCreate(BaseModel):
+class VagaCreate(TipoVagaBase):
     numero: str
     localizacao: Optional[str] = ""
     preco: Optional[float] = 0.0
-    tipo: str = "Carro"
+    tipo: Literal["carro", "moto"] = "carro"
     preferencial: bool = False
     disponivel: bool = True
     estacionamentoId: str
 
-class VagaUpdate(BaseModel):
+class VagaUpdate(TipoVagaBase):
     numero: Optional[str] = None
     localizacao: Optional[str] = None
     preco: Optional[float] = None
-    tipo: str = "Carro"
+    tipo: Optional[Literal["carro", "moto"]] = None
     preferencial: Optional[bool] = None
     disponivel: Optional[bool] = None
 
-class VagasLoteCreate(BaseModel):
+class VagasLoteCreate(TipoVagaBase):
     estacionamentoId: str
     quantidade: int = Field(..., gt=0, description="Quantidade de vagas a gerar")
     prefixo: Optional[str] = Field("A-", description="Prefixo para o número da vaga, ex: A-1, A-2")
-    tipo: str = "Carro"
+    tipo: Literal["carro", "moto"] = "carro"
     preco: Optional[float] = 0.0
     preferencial: bool = False
     localizacao: Optional[str] = ""
@@ -259,8 +305,9 @@ class LeituraPlacaSchema(BaseModel):
 # --- ---------------- PAGAMENTO ------------------------
 
 class RequisicaoPagamento(BaseModel):
-    valor: float
-    metodo: str
-    numero_cartao: str | None = None
-    usuario_id: str | None = None
-    reserva_id: str  
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    valor: Decimal = Field(gt=0, max_digits=12, decimal_places=2, allow_inf_nan=False)
+    metodo: Literal["pix"] = "pix"
+    numero_cartao: str | None = Field(default=None, exclude=True)
+    usuario_id: str | None = Field(default=None, validation_alias=AliasChoices("usuario_id", "usuarioId"))
+    reserva_id: str = Field(min_length=1, max_length=1500, pattern=r"^[^/]+$", validation_alias=AliasChoices("reserva_id", "reservaId"))

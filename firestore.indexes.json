@@ -1,0 +1,111 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "notificacoes_admin",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "estacionamentoId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "reserva",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "estacionamentoId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "valorTotal",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "reserva",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "estacionamentoId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "inicioReserva",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "vaga",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "estacionamentoId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "disponivel",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "reserva",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "estacionamentoId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "inicioReserva",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "reserva",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "usuarioId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "reserva",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "usuarioId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "vagaId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

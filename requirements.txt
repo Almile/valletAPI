@@ -109,3 +109,4 @@ waitress==3.0.2
 watchfiles==1.2.0
 webencodings==0.5.1
 websockets==17.1
+tzdata>=2024.1
