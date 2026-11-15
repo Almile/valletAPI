@@ -2,8 +2,9 @@ import os
 import httpx
 from fastapi import APIRouter, HTTPException, Depends, status
 from firebase_admin import auth, firestore
-from app.models.schemas import UsuarioCreate, FCMTokenUpdate
-from app.valida_token import get_usuario_atual
+from typing import Optional
+from app.models.schemas import PerfilUpdate, UsuarioCreate, FCMTokenUpdate
+from app.valida_token import get_usuario_atual, get_usuario_opcional
 from app.core.firebase import db
 from pydantic import BaseModel, EmailStr
 
@@ -62,30 +63,45 @@ async def login(email: str, senha: str):
 @router.post("/criar_usuario", status_code=status.HTTP_201_CREATED)
 def criar_usuario(
     dados: UsuarioCreate,
-    usuario_logado: dict = Depends(get_usuario_atual)
+    usuario_logado: Optional[dict] = Depends(get_usuario_opcional)
 ):
     """
     Cria um novo usuário.
-    Se o novo usuário for um 'admin', exige que o criador seja 'superadmin'.
-    """
-    solicitante_uid = usuario_logado.get("uid")
 
-    if dados.tipo_user in ["admin", "administrador"]:
+    O cadastro de motorista é público (não exige token). A criação de contas
+    administrativas continua restrita a um 'superadmin' autenticado.
+    """
+    tipo_user = (dados.tipo_user or "motorista").strip().lower()
+    tipos_permitidos = {"motorista", "admin", "administrador", "superadmin"}
+    if tipo_user not in tipos_permitidos:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Tipo de usuário inválido."
+        )
+
+    if tipo_user in {"admin", "administrador", "superadmin"}:
+        solicitante_uid = (usuario_logado or {}).get("uid")
+        if not solicitante_uid:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Autentique-se como superadmin para cadastrar administradores."
+            )
+
         solicitante_doc = database.collection("usuario").document(solicitante_uid).get()
-        
+
         if not solicitante_doc.exists:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Usuário autenticado não encontrado no banco de dados."
             )
 
-        dados_solicitante = solicitante_doc.to_dict()
+        dados_solicitante = solicitante_doc.to_dict() or {}
         tipo_solicitante = dados_solicitante.get("tipo_user")
 
         if tipo_solicitante != "superadmin":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Voce não tem permissão para cadastrar novos administradores."
+                detail="Você não tem permissão para cadastrar novos administradores."
             )
 
     try:
@@ -99,7 +115,7 @@ def criar_usuario(
             "uid": dados_usuario.uid,
             "nome": dados.nome,
             "email": dados.email,
-            "tipo_user": dados.tipo_user or "motorista",
+            "tipo_user": tipo_user,
             "cnh": dados.cnh or "",
             "telefone": dados.telefone or "",
             "fotoPerfil": dados.fotoPerfil or "",
@@ -117,7 +133,7 @@ def criar_usuario(
             "uid": dados_usuario.uid,
             "email": dados.email,
             "nome": dados.nome,
-            "tipo_user": dados.tipo_user
+            "tipo_user": tipo_user
         }
     
     except HTTPException:
@@ -182,6 +198,81 @@ def obter_perfil_logado(usuario_logado: dict = Depends(get_usuario_atual)):
         )
         
     return doc.to_dict()
+
+@router.patch("/perfil")
+def editar_perfil(
+    dados: PerfilUpdate,
+    usuario_logado: dict = Depends(get_usuario_atual)
+):
+    """
+    Atualiza o perfil do próprio usuário autenticado.
+
+    Somente nome, e-mail, telefone, CNH, foto e senha podem ser alterados.
+    Tipo de usuário, cargo e vínculos não podem ser modificados por esta rota.
+    """
+    uid = usuario_logado.get("uid")
+    if not uid:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Usuário não identificado."
+        )
+
+    usuario_ref = database.collection("usuario").document(uid)
+    usuario_doc = usuario_ref.get()
+    if not usuario_doc.exists:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Perfil de usuário não encontrado no Firestore."
+        )
+
+    novos = dados.model_dump(exclude_unset=True, exclude={"senha"})
+    nova_senha = dados.senha.get_secret_value() if dados.senha is not None else None
+
+    if not novos and nova_senha is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Nenhum campo foi informado para atualização."
+        )
+
+    credenciais = {}
+    if "email" in novos:
+        novos["email"] = str(novos["email"])
+        credenciais["email"] = novos["email"]
+        credenciais["email_verified"] = False
+    if nova_senha is not None:
+        credenciais["password"] = nova_senha
+
+    try:
+        if credenciais:
+            auth.update_user(uid, **credenciais)
+
+        if novos:
+            usuario_ref.update({
+                **novos,
+                "data_atualizacao": firestore.SERVER_TIMESTAMP,
+            })
+
+        atualizados = {**(usuario_doc.to_dict() or {}), **novos, "uid": uid}
+        return atualizados
+
+    except auth.EmailAlreadyExistsError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Este e-mail já está em uso por outra conta."
+        )
+    except auth.UserNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Conta não encontrada no Firebase Authentication."
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro ao atualizar perfil: {str(e)}"
+        )
+
 
 @router.post("/logout", status_code=status.HTTP_200_OK)
 def logout(usuario_logado: dict = Depends(get_usuario_atual)):

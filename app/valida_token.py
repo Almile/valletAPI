@@ -1,18 +1,19 @@
+from typing import Optional
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from firebase_admin import auth
 
 security = HTTPBearer()
+security_opcional = HTTPBearer(auto_error=False)
 
-def get_usuario_atual(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
-    token = credentials.credentials
+
+def _decodificar_token(token: str) -> dict:
     try:
-        decoded_token = auth.verify_id_token(
-            token, 
-            check_revoked=False, 
+        return auth.verify_id_token(
+            token,
+            check_revoked=False,
             clock_skew_seconds=60
         )
-        return decoded_token
 
     except auth.ExpiredIdTokenError:
         raise HTTPException(
@@ -32,3 +33,16 @@ def get_usuario_atual(credentials: HTTPAuthorizationCredentials = Depends(securi
             detail=f"Erro na autenticação: {str(e)}",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+
+def get_usuario_atual(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
+    return _decodificar_token(credentials.credentials)
+
+
+def get_usuario_opcional(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_opcional),
+) -> Optional[dict]:
+    """Autentica quando há token, mas permite chamadas públicas sem token."""
+    if credentials is None:
+        return None
+    return _decodificar_token(credentials.credentials)

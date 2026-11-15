@@ -224,7 +224,7 @@ def processar_entrada_em_segundo_plano(id_estacionamento: str, id_vaga: str,
         print(f"Erro no processamento em segundo plano da entrada: {e}")
 
 
-@router.post("/api/v1/eventos/placa-detectada")
+@router.post("/placa-detectada")
 async def receber_placa_detectada(
     background_tasks: BackgroundTasks,
     id_estacionamento: str = Form(...),
@@ -316,7 +316,7 @@ def processar_saida_em_segundo_plano(id_estacionamento: str, id_vaga: str,
         print(f"Erro no processamento em segundo plano da saída: {e}")
 
 
-@router.post("/api/v1/eventos/saida-detectada")
+@router.post("/saida-detectada")
 async def receber_saida_detectada(
     background_tasks: BackgroundTasks,
     id_estacionamento: str = Form(...),
@@ -342,7 +342,7 @@ async def receber_saida_detectada(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/api/v1/eventos/alerta-sistema")
+@router.post("/alerta-sistema")
 async def receber_alerta_sistema(
     id_estacionamento: str = Form(...),
     tipo: str = Form(...),
@@ -363,7 +363,7 @@ _ultimo_heartbeat: dict = {}
 _leitores_offline: set = set()
 
 
-@router.post("/api/v1/eventos/heartbeat")
+@router.post("/heartbeat")
 async def receber_heartbeat(id_estacionamento: str = Form(...)):
     _ultimo_heartbeat[id_estacionamento] = time.time()
     if id_estacionamento in _leitores_offline:

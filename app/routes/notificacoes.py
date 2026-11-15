@@ -1,4 +1,5 @@
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 from google.api_core.exceptions import FailedPrecondition
@@ -57,14 +58,15 @@ def _consulta_base(estacionamento_id: str):
 
 def _resumo_notificacoes(estacionamento_id: str):
     """Devolve (total, não lidas) usando apenas agregações ``count()``.
-
-    Documentos antigos sem o campo ``lida`` continuam sendo tratados como não
-    lidos, igual ao restante da aplicação. Por isso o cálculo é
-    ``total - lidas`` em vez de contar diretamente ``lida == False``.
     """
     base = _consulta_base(estacionamento_id)
-    total = contar(base)
-    lidas = contar(base.where(filter=FieldFilter("lida", "==", True)))
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futuro_total = executor.submit(contar, base)
+        futuro_lidas = executor.submit(
+            contar, base.where(filter=FieldFilter("lida", "==", True))
+        )
+        total = futuro_total.result()
+        lidas = futuro_lidas.result()
     return total, max(0, total - lidas)
 
 
