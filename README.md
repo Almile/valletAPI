@@ -83,9 +83,6 @@ app/models/: Onde definimos quais campos cada dado deve ter (Schemas).
 
 app/core/: Configurações de conexão (Firebase).
 
-📖 Documentação Automática
-Com o servidor rodando, acesse: http://localhost:8000/docs para ver e testar todas as rotas criadas.
-
 ## 📱 Como conectar o Retrofit à API do Vallet
 
 Este tutorial explica como configurar o Retrofit no Android Studio para conectar o aplicativo Vallet à API FastAPI executada no computador.

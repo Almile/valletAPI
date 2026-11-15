@@ -1,9 +1,19 @@
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
-from app.models.schemas import Endereco, EstacionamentoSchema, EstacionamentoBase, EstacionamentoCreate, EstacionamentoUpdate
+import math
+from concurrent.futures import ThreadPoolExecutor
+from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File
+from app.models.schemas import (
+    Endereco,
+    EstacionamentoProximo,
+    EstacionamentoSchema,
+    EstacionamentoBase,
+    EstacionamentoCreate,
+    EstacionamentoUpdate,
+)
 from app.valida_token import get_usuario_atual
 from app.core.firebase import db
 from app.core.vagas_resumo import resumo_vagas, resumo_vagas_por_consulta
 from firebase_admin import firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
 from pydantic import ValidationError
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut, GeocoderServiceError
@@ -14,14 +24,174 @@ router = APIRouter()
 database = db
 geolocator = Nominatim(user_agent="vallet_projeto_app")
 
-def atualizar_resumo_resposta(dados, estacionamento_id):
-    """Inclui o resumo de vagas sem ler todos os documentos da coleção.
+CAMPOS_RESUMO_VAGAS = (
+    "quantidadeVagasTotal",
+    "vagasDisponiveis",
+    "quantidadeVagasComum",
+    "quantidadeVagasIdosoPcd",
+    "tiposVagasComum",
+    "tiposVagasIdosoPcd",
+)
 
-    A versão anterior fazia ``stream()`` em todas as vagas do estacionamento
-    a cada listagem, o que era o principal consumidor de leituras do Firestore.
+
+def atualizar_resumo_resposta(dados, estacionamento_id):
+    """Inclui o resumo de vagas sem consultar a coleção em toda listagem.
     """
-    dados.update(resumo_vagas_por_consulta(estacionamento_id))
+    if all(dados.get(campo) is not None for campo in CAMPOS_RESUMO_VAGAS):
+        return dados
+
+    resumo = resumo_vagas_por_consulta(estacionamento_id)
+    dados.update(resumo)
+
+    try:
+        database.collection("estacionamento").document(estacionamento_id).update(resumo)
+    except Exception as erro:
+        print(f"[RESUMO VAGAS] Falha ao persistir resumo de {estacionamento_id}: {erro}")
+
     return dados
+
+
+def _distancia_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Distância geodésica entre dois pontos usando a fórmula de Haversine."""
+    raio_terra_km = 6371.0088
+    rad = math.radians
+    dlat = rad(lat2 - lat1)
+    dlon = rad(lon2 - lon1)
+    a = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(rad(lat1)) * math.cos(rad(lat2)) * math.sin(dlon / 2) ** 2
+    )
+    return raio_terra_km * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _precisao_geohash(raio_km: float) -> int:
+    """Escolhe uma célula geohash ao menos tão larga quanto o raio pedido."""
+    if raio_km <= 0.15:
+        return 7
+    if raio_km <= 0.6:
+        return 6
+    if raio_km <= 4.5:
+        return 5
+    # A célula de precisão 4 mede ~39 km por ~19,5 km; use a menor dimensão
+    # para garantir que os oito vizinhos cubram todo o raio.
+    if raio_km <= 19:
+        return 4
+    if raio_km <= 150:
+        return 3
+    return 2
+
+
+def _prefixos_geohash(latitude: float, longitude: float, raio_km: float) -> list[str]:
+    """Célula central e as oito vizinhas que cobrem o raio solicitado."""
+    precisao = _precisao_geohash(raio_km)
+    centro = pgh.encode(latitude=latitude, longitude=longitude, precision=precisao)
+    prefixos = {centro}
+
+    def vizinho(origem: str, direcao: str):
+        try:
+            return pgh.get_adjacent(origem, direcao)
+        except ValueError:
+            return None
+
+    topo = vizinho(centro, "top")
+    baixo = vizinho(centro, "bottom")
+    esquerda = vizinho(centro, "left")
+    direita = vizinho(centro, "right")
+
+    for valor in (topo, baixo, esquerda, direita):
+        if valor:
+            prefixos.add(valor)
+
+    for base, direcao in (
+        (topo, "left"),
+        (topo, "right"),
+        (baixo, "left"),
+        (baixo, "right"),
+    ):
+        if base:
+            valor = vizinho(base, direcao)
+            if valor:
+                prefixos.add(valor)
+
+    return sorted(prefixos)
+
+
+@router.get("/proximos", response_model=list[EstacionamentoProximo])
+def listar_estacionamentos_proximos(
+    latitude: float = Query(..., ge=-90, le=90, description="Latitude atual do motorista"),
+    longitude: float = Query(..., ge=-180, le=180, description="Longitude atual do motorista"),
+    raio_km: float = Query(5.0, gt=0, le=200, description="Raio máximo em quilômetros"),
+    limite: int = Query(20, ge=1, le=100),
+    somente_com_vagas: bool = Query(False, description="Retorna apenas estacionamentos com vaga livre"),
+    usuario_logado: dict = Depends(get_usuario_atual),
+):
+    """
+    Lista estacionamentos dentro do raio informado, do mais próximo ao mais distante.
+    """
+    try:
+        prefixos = _prefixos_geohash(latitude, longitude, raio_km)
+        colecao = database.collection("estacionamento")
+        candidatos = {}
+
+        for prefixo in prefixos:
+            consulta = (
+                colecao
+                .where(filter=FieldFilter("geohash", ">=", prefixo))
+                .where(filter=FieldFilter("geohash", "<", f"{prefixo}\uf8ff"))
+            )
+            for doc in consulta.stream():
+                candidatos[doc.id] = doc
+
+        proximos = []
+        for doc in candidatos.values():
+            dados = doc.to_dict() or {}
+            try:
+                lat_est = float(dados.get("latitude"))
+                lon_est = float(dados.get("longitude"))
+            except (TypeError, ValueError):
+                continue
+
+            distancia = _distancia_km(latitude, longitude, lat_est, lon_est)
+            if distancia > raio_km:
+                continue
+            proximos.append((distancia, doc))
+
+        proximos.sort(key=lambda item: item[0])
+
+        resultados = []
+        for distancia, doc in proximos:
+            dados = doc.to_dict() or {}
+            dados["id"] = doc.id
+
+            try:
+                dados = atualizar_resumo_resposta(dados, doc.id)
+            except Exception as erro:
+                print(f"[PROXIMOS] Falha ao resumir vagas de {doc.id}: {erro}")
+
+            if somente_com_vagas and int(dados.get("vagasDisponiveis") or 0) <= 0:
+                continue
+
+            dados["distanciaKm"] = round(distancia, 2)
+            dados["distanciaMetros"] = int(round(distancia * 1000))
+
+            try:
+                resultados.append(EstacionamentoProximo(**dados))
+            except ValidationError as erro:
+                print(f"[PROXIMOS] Estacionamento {doc.id} inválido: {erro}")
+                continue
+
+            if len(resultados) >= limite:
+                break
+
+        return resultados
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro ao listar estacionamentos por proximidade: {str(e)}"
+        )
 
 
 @router.post("/criar_estacionamento", response_model=EstacionamentoSchema, status_code=status.HTTP_201_CREATED)
@@ -95,6 +265,17 @@ def criar_estacionamento(
                     print(f"Aviso: Endereço não encontrado no mapa: {endereco_str}")
             except (GeocoderTimedOut, GeocoderServiceError) as e:
                 print(f"Erro de geocodificação: {e}")
+
+        if (
+            not estacionamento.geohash
+            and estacionamento.latitude
+            and estacionamento.longitude
+        ):
+            estacionamento.geohash = pgh.encode(
+                latitude=estacionamento.latitude,
+                longitude=estacionamento.longitude,
+                precision=9,
+            )
 
         estacionamento_dict = estacionamento.model_dump(exclude={"vagasIniciais"})
         vagas_iniciais = [vaga.model_dump() for vaga in estacionamento.vagasIniciais]
@@ -174,11 +355,16 @@ def buscar_estacionamento_por_id(
     try:
         uid = usuario_logado.get("uid")
 
-        user_doc = database.collection("usuario").document(uid).get()
-        tipo_user = user_doc.to_dict().get("tipo_user") if user_doc.exists else "motorista"
-
+        user_ref = database.collection("usuario").document(uid)
         estacionamento_ref = database.collection("estacionamento").document(estacionamento_id)
-        doc = estacionamento_ref.get()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futuro_usuario = executor.submit(user_ref.get)
+            futuro_estacionamento = executor.submit(estacionamento_ref.get)
+            user_doc = futuro_usuario.result()
+            doc = futuro_estacionamento.result()
+
+        tipo_user = user_doc.to_dict().get("tipo_user") if user_doc.exists else "motorista"
 
         if not doc.exists:
             raise HTTPException(
@@ -214,16 +400,30 @@ def listar_estacionamentos(usuario_logado: dict = Depends(get_usuario_atual)):
     """
     try:
         uid = usuario_logado.get("uid")
-        
-        user_doc = database.collection("usuario").document(uid).get()
-        tipo_user = user_doc.to_dict().get("tipo_user") if user_doc.exists else "motorista"
+        colecao = database.collection("estacionamento")
 
-        if tipo_user == "superadmin":
-            estacionamentos_ref = database.collection("estacionamento")
-        else:
-            estacionamentos_ref = database.collection("estacionamento").where("adminUid", "==", uid)
+        # Busca o perfil e os estacionamentos do admin ao mesmo tempo. Para
+        # superadmin a consulta paralela é descartada e a coleção é listada.
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futuro_usuario = executor.submit(
+                database.collection("usuario").document(uid).get
+            )
+            futuro_admin = executor.submit(
+                lambda: list(
+                    colecao.where(
+                        filter=FieldFilter("adminUid", "==", uid)
+                    ).stream()
+                )
+            )
 
-        estacionamentos_docs = estacionamentos_ref.stream()
+            user_doc = futuro_usuario.result()
+            tipo_user = user_doc.to_dict().get("tipo_user") if user_doc.exists else "motorista"
+
+            estacionamentos_docs = (
+                colecao.stream()
+                if tipo_user == "superadmin"
+                else futuro_admin.result()
+            )
 
         estacionamentos_list = []
         for doc in estacionamentos_docs:
@@ -266,23 +466,23 @@ def atualizar_estacionamento(
         if not novos:
             return EstacionamentoSchema(**{**atuais, "id": doc.id})
         
-            if "adminUid" in novos and novos["adminUid"] != atuais.get("adminUid"):
-                est_existente = database.collection("estacionamento").where("adminUid", "==", novos["adminUid"]).limit(1).stream()
-                for doc in est_existente:
-                    if doc.id != estacionamento_id:
-                        raise HTTPException(
-                            status_code=status.HTTP_400_BAD_REQUEST,
-                            detail="O novo administrador já está vinculado a outro estacionamento."
-                        )
-            if tipo_user != "superadmin" and novos["adminUid"] != atuais.get("adminUid"):
-                raise HTTPException(status_code=403, detail="Apenas superadmin pode alterar o administrador responsável.")
-            admin_doc = database.collection("usuario").document(novos["adminUid"]).get()
-            if not admin_doc.exists:
-                raise HTTPException(status_code=404, detail="Administrador não encontrado.")
-            admin = admin_doc.to_dict()
-            if admin.get("tipo_user") not in ("admin", "administrador", "superadmin"):
-                raise HTTPException(status_code=400, detail="O responsável deve possuir perfil de administrador.")
-            novos["adminEmail"] = admin.get("email")
+        if "adminUid" in novos and novos["adminUid"] != atuais.get("adminUid"):
+            est_existente = database.collection("estacionamento").where("adminUid", "==", novos["adminUid"]).limit(1).stream()
+            for doc in est_existente:
+                if doc.id != estacionamento_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="O novo administrador já está vinculado a outro estacionamento."
+                    )
+        if tipo_user != "superadmin" and novos["adminUid"] != atuais.get("adminUid"):
+            raise HTTPException(status_code=403, detail="Apenas superadmin pode alterar o administrador responsável.")
+        admin_doc = database.collection("usuario").document(novos["adminUid"]).get()
+        if not admin_doc.exists:
+            raise HTTPException(status_code=404, detail="Administrador não encontrado.")
+        admin = admin_doc.to_dict()
+        if admin.get("tipo_user") not in ("admin", "administrador", "superadmin"):
+            raise HTTPException(status_code=400, detail="O responsável deve possuir perfil de administrador.")
+        novos["adminEmail"] = admin.get("email")
 
         
         endereco_foi_alterado = "endereco" in novos
@@ -315,7 +515,21 @@ def atualizar_estacionamento(
                         print(f"Aviso: Endereço não encontrado no mapa durante atualização: {endereco_para_busca}")
                 except (GeocoderTimedOut, GeocoderServiceError) as e:
                     print(f"Erro de geocodificação na atualização: {e}")
-                
+
+        latitude_final = novos.get("latitude", atuais.get("latitude"))
+        longitude_final = novos.get("longitude", atuais.get("longitude"))
+        if (
+            not novos.get("geohash")
+            and not atuais.get("geohash")
+            and latitude_final
+            and longitude_final
+        ):
+            novos["geohash"] = pgh.encode(
+                latitude=float(latitude_final),
+                longitude=float(longitude_final),
+                precision=9,
+            )
+
         if isinstance(novos.get("endereco"), dict):
             novos["endereco"].pop("localidade", None)
         if isinstance(atuais.get("endereco"), dict):

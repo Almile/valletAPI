@@ -12,7 +12,7 @@ class UsuarioSchema(BaseModel):
     email: EmailStr = Field(..., examples=["luan@gmail.com"])
     cnh: Optional[str] = None
     tipo_user: str = Field("motorista", examples=["motorista"])
-    fotoPerfil: Optional[str] = 'path_imagem_padrao'
+    fotoPerfil: Optional[str] = 'https://res.cloudinary.com/dkmbs6lyk/image/upload/v1794715283/copy_of_whatsapp_image_2026-11-15_at_005804_txbpkw.jpg'
     telefone: Optional[str] = None
     cargo: Optional[str] = None
     fcm_token: Optional[str] = None
@@ -26,7 +26,6 @@ class UsuarioUpdate(BaseModel):
 
     nome: Optional[str] = Field(default=None, min_length=1)
     email: Optional[EmailStr] = None
-    # Apenas entrada: nunca incluir senha no model_dump destinado ao Firestore.
     senha: Optional[SecretStr] = Field(default=None, min_length=6, max_length=128, exclude=True, repr=False)
     telefone: Optional[str] = None
     cnh: Optional[str] = None
@@ -57,6 +56,36 @@ class UsuarioResponse(UsuarioSchema):
     ultima_atualizacao_token: Optional[datetime] = None
     estacionamentoId: Optional[str] = None
     estacionamentoNome: Optional[str] = None
+
+
+class PerfilUpdate(BaseModel):
+    """Campos que o próprio usuário pode alterar no seu perfil.
+
+    Tipo de usuário, vínculos e cargos não fazem parte deste schema para evitar
+    escalonamento de privilégios pela rota de perfil.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    nome: Optional[str] = Field(default=None, min_length=1)
+    email: Optional[EmailStr] = None
+    telefone: Optional[str] = None
+    cnh: Optional[str] = None
+    fotoPerfil: Optional[str] = None
+    senha: Optional[SecretStr] = Field(
+        default=None, min_length=6, max_length=128, exclude=True, repr=False
+    )
+
+    @model_validator(mode="after")
+    def validar_perfil(self):
+        for campo in ("nome", "email", "senha"):
+            if campo in self.model_fields_set and getattr(self, campo) is None:
+                raise ValueError(f"O campo {campo} não pode ser nulo.")
+        if self.nome is not None:
+            self.nome = self.nome.strip()
+            if not self.nome:
+                raise ValueError("O nome não pode ficar vazio.")
+        return self
 
 # --- VEICULO ---
 class VeiculoCreate(BaseModel):
@@ -130,7 +159,7 @@ class EstacionamentoBase(BaseModel):
     toleranciaReservaMinutos: Optional[int] = 10
     
     # Localização
-    fotoEstacionamentoUri: Optional[str] = None
+    fotoEstacionamentoUri: Optional[str] = "https://res.cloudinary.com/dkmbs6lyk/image/upload/v1794715677/copy_of_vallet_logo_r6gvzr.png"
     distanciaMetros: Optional[int] = 0
     latitude: Optional[float] = 0.0
     longitude: Optional[float] = 0.0
@@ -208,6 +237,13 @@ class EstacionamentoSchema(EstacionamentoBase):
         return f"{self.horarioAbertura or '-'} às {self.horarioFechamento or '-'}"
 
 
+class EstacionamentoProximo(EstacionamentoSchema):
+    """Estacionamento com a distância calculada em relação ao usuário."""
+
+    distanciaMetros: int = 0
+    distanciaKm: float = 0.0
+
+
 class EstacionamentoUpdate(BaseModel):
     nome: Optional[str] = Field(default=None, min_length=1)
     cnpj: Optional[str] = Field(default=None, min_length=1)
@@ -277,6 +313,51 @@ class ReservaCreate(BaseModel):
     estacionamentoId: str
     inicioReserva: datetime
     fimReserva: datetime
+
+class ReservaCriar(BaseModel):
+    """Dados enviados pelo motorista ao reservar uma vaga."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    vagaId: str = Field(..., min_length=1, max_length=1500, pattern=r"^[^/]+$")
+    estacionamentoId: Optional[str] = Field(
+        default=None, min_length=1, max_length=1500, pattern=r"^[^/]+$"
+    )
+    inicioReserva: Optional[datetime] = None
+    fimReserva: Optional[datetime] = None
+    duracaoHoras: Optional[float] = Field(default=None, gt=0, le=24 * 7, allow_inf_nan=False)
+    placa: Optional[str] = Field(default=None, max_length=20)
+
+    @model_validator(mode="after")
+    def validar_duracao(self):
+        if self.fimReserva is None and self.duracaoHoras is None:
+            raise ValueError("Informe fimReserva ou duracaoHoras.")
+        if self.placa is not None:
+            self.placa = self.placa.strip().upper() or None
+        return self
+
+
+class ReservaEstender(BaseModel):
+    """Aumenta o tempo de uma reserva ativa."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    fimReserva: Optional[datetime] = None
+    horasAdicionais: Optional[float] = Field(
+        default=None, gt=0, le=24 * 7, allow_inf_nan=False
+    )
+    minutosAdicionais: Optional[int] = Field(default=None, gt=0, le=60 * 24 * 7)
+
+    @model_validator(mode="after")
+    def validar_estender(self):
+        if (
+            self.fimReserva is None
+            and self.horasAdicionais is None
+            and self.minutosAdicionais is None
+        ):
+            raise ValueError("Informe fimReserva, horasAdicionais ou minutosAdicionais.")
+        return self
+
 
 class Reserva(ReservaCreate):
     id: Optional[str] = None

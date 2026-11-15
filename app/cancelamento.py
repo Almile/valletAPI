@@ -49,7 +49,12 @@ def cancelar_transacao(transaction, database, reserva_id, uid, vaga_esperada):
     validar_cancelamento(reserva, uid, datetime.now(timezone.utc))
     transaction.update(ref, {"status": "cancelada"})
     transaction.update(vaga_ref, {"disponivel": True})
-    return {"reservaId": reserva_id, "vagaId": vaga_id, "status": "cancelada"}
+    return {
+        "reservaId": reserva_id,
+        "vagaId": vaga_id,
+        "estacionamentoId": reserva.get("estacionamentoId"),
+        "status": "cancelada",
+    }
 
 
 @firestore.transactional
