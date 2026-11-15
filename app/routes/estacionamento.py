@@ -280,8 +280,8 @@ def criar_estacionamento(
         estacionamento_dict = estacionamento.model_dump(exclude={"vagasIniciais"})
         vagas_iniciais = [vaga.model_dump() for vaga in estacionamento.vagasIniciais]
         estacionamento_dict.update(resumo_vagas(vagas_iniciais))
-        # As vagas iniciais são criadas livres. Quantidades enviadas manualmente são ignoradas.
         estacionamento_dict["adminEmail"] = dados_admin.get("email")
+        estacionamento_dict["adminNome"] = dados_admin.get("nome") or ""
         estacionamento_dict["criadoPorUid"] = solicitante_uid
         estacionamento_dict["data_criacao"] = firestore.SERVER_TIMESTAMP
 
@@ -380,6 +380,21 @@ def buscar_estacionamento_por_id(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Você não tem permissão para visualizar os detalhes deste estacionamento."
             )
+
+        if not dados.get("adminNome") and dados.get("adminUid"):
+            admin_doc = database.collection("usuario").document(dados["adminUid"]).get()
+            if admin_doc.exists:
+                admin = admin_doc.to_dict() or {}
+                dados["adminNome"] = admin.get("nome") or ""
+                if admin.get("email"):
+                    dados["adminEmail"] = admin.get("email")
+                try:
+                    estacionamento_ref.update({
+                        "adminNome": dados["adminNome"],
+                        "adminEmail": dados.get("adminEmail") or "",
+                    })
+                except Exception as erro:
+                    print(f"[ESTACIONAMENTO] Falha ao persistir responsável de {estacionamento_id}: {erro}")
 
         return EstacionamentoSchema(**atualizar_resumo_resposta(dados, estacionamento_id))
 
@@ -483,6 +498,7 @@ def atualizar_estacionamento(
         if admin.get("tipo_user") not in ("admin", "administrador", "superadmin"):
             raise HTTPException(status_code=400, detail="O responsável deve possuir perfil de administrador.")
         novos["adminEmail"] = admin.get("email")
+        novos["adminNome"] = admin.get("nome") or ""
 
         
         endereco_foi_alterado = "endereco" in novos

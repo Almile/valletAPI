@@ -1,4 +1,5 @@
 from typing import List, Optional
+from concurrent.futures import ThreadPoolExecutor
 from fastapi import APIRouter, HTTPException, Depends, status, Query
 from firebase_admin import auth, firestore
 from firebase_admin import exceptions as firebase_exceptions
@@ -66,14 +67,26 @@ def listar_admins_disponiveis(usuario_logado: dict = Depends(get_usuario_atual))
     Lista apenas admins que ainda não estão vinculados a nenhum estacionamento.
     """
     try:
-        admins_docs = (database.collection("usuario").where("tipo_user", "in", ["admin", "administrador"]).where("ativo", "!=", False).stream())
+        consulta_admins = (
+            database.collection("usuario")
+            .where("tipo_user", "in", ["admin", "administrador"])
+            .where("ativo", "!=", False)
+        )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futuro_admins = executor.submit(lambda: list(consulta_admins.stream()))
+            futuro_estacionamentos = executor.submit(
+                lambda: list(database.collection("estacionamento").stream())
+            )
+            admins_docs = futuro_admins.result()
+            estacionamentos_docs = futuro_estacionamentos.result()
+
         admins = []
         for doc in admins_docs:
             data = doc.to_dict()
             data["uid"] = doc.id
             admins.append(data)
 
-        estacionamentos_docs = database.collection("estacionamento").stream()
         admins_vinculados = set()
         for doc in estacionamentos_docs:
             data = doc.to_dict()

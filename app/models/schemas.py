@@ -228,6 +228,7 @@ class EstacionamentoCreate(EstacionamentoBase):
 class EstacionamentoSchema(EstacionamentoBase):
     id: Optional[str] = None
     adminEmail: Optional[str] = None
+    adminNome: Optional[str] = None
 
     @computed_field
     @property
