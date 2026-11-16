@@ -3,6 +3,7 @@ from app.models.schemas import UsuarioResponse, VeiculoCreate, VeiculoResponse
 from app.valida_token import get_usuario_atual
 from app.core.firebase import db
 from firebase_admin import firestore
+from datetime import datetime, timezone
 
 router = APIRouter()
 database = db
@@ -18,14 +19,16 @@ def criar_veiculo(
     try:
         veiculo_dict = veiculo.model_dump()
         veiculo_dict["usuarioId"] = usuario_logado.get("uid")
-        veiculo_dict["usuarioEmail"] = usuario_logado.get("email")
-        veiculo_dict["dataCadastro"] = firestore.SERVER_TIMESTAMP
+        veiculo_dict["usuarioEmail"] = usuario_logado.get("email") or ""
 
         doc_ref = database.collection("veiculo").document()
-        doc_ref.set(veiculo_dict)
+        doc_ref.set({**veiculo_dict, "dataCadastro": firestore.SERVER_TIMESTAMP})
 
-        veiculo_response = VeiculoResponse(**veiculo_dict, id=doc_ref.id)
-        return veiculo_response
+        return VeiculoResponse(
+            **veiculo_dict,
+            id=doc_ref.id,
+            dataCadastro=datetime.now(timezone.utc),
+        )
 
     except Exception as e:
         raise HTTPException(
