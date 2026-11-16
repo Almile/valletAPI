@@ -129,7 +129,6 @@ def _autorizar_dashboard_reservas(uid, id_estacionamento):
             raise HTTPException(status_code=403, detail="Sem acesso a este estacionamento.")
     return documento.id
 
-
 def _consultar_reservas_periodo(id_estacionamento, inicio, fim, agora):
     rotulos = {
         "confirmadas": "Confirmadas",
@@ -143,7 +142,9 @@ def _consultar_reservas_periodo(id_estacionamento, inicio, fim, agora):
     contagens = dict.fromkeys(rotulos, 0)
     por_dia = OrderedDict()
     faturamento_por_dia = OrderedDict()
-    
+
+    por_horario = [0] * 24
+
     dia = inicio.date()
     while dia < fim.date():
         data_str = dia.isoformat()
@@ -159,7 +160,7 @@ def _consultar_reservas_periodo(id_estacionamento, inicio, fim, agora):
         .order_by("inicioReserva")
         .select(["inicioReserva", "fimReserva", "status", "valorTotal"])
     )
-    
+
     faturamento_total = 0.0
 
     for documento in consulta.stream(retry=None, timeout=30):
@@ -167,20 +168,31 @@ def _consultar_reservas_periodo(id_estacionamento, inicio, fim, agora):
         data = _data_dashboard(dados.get("inicioReserva"))
         if data is None or not inicio <= data < fim:
             continue
-            
+
         situacao = _situacao_dashboard(dados, agora)
         contagens[situacao] += 1
-        
+
         data_str = data.date().isoformat()
         linha = por_dia[data_str]
         linha["total"] += 1
         linha[situacao] += 1
 
-        # Acumula o faturamento da reserva (se houver valor registrado)
+        if situacao != "canceladas":
+            por_horario[data.hour] += 1
+
         valor_reserva = float(dados.get("valorTotal", 0.0) or 0.0)
         faturamento_total += valor_reserva
         if data_str in faturamento_por_dia:
             faturamento_por_dia[data_str] += valor_reserva
+
+    horarios = [
+        {
+            "hora": h,
+            "rotulo": f"{h:02d}h–{(h + 1) % 24:02d}h",
+            "total": por_horario[h],
+        }
+        for h in range(24)
+    ]
 
     return {
         "id_estacionamento": id_estacionamento,
@@ -207,6 +219,7 @@ def _consultar_reservas_periodo(id_estacionamento, inicio, fim, agora):
                 {"status": estado, "rotulo": rotulo, "total": contagens[estado]}
                 for estado, rotulo in rotulos.items()
             ],
+            "reservas_por_horario": horarios,
         },
         "criterios": {
             "confirmadas": "Ativas, agendadas ou confirmadas com horário ainda válido.",
