@@ -251,6 +251,7 @@ async def receber_placa_detectada(
             'ocupada': True,
             'status': 'OCUPADA',
             'numero': numero_vaga,
+            'disponivel': False,
             'id_estacionamento': id_estacionamento,
             'ultima_atualizacao': datetime.now()
         }, merge=True)
@@ -328,6 +329,7 @@ async def receber_saida_detectada(
     try:
         db.collection('vaga').document(id_vaga).set({
             'placa_atual': None, 'ocupada': False, 'status': 'LIVRE',
+            'disponivel': True,
             'ultima_atualizacao': datetime.now()
         }, merge=True)
 
