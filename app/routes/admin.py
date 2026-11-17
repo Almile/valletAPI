@@ -131,6 +131,7 @@ def _autorizar_dashboard_reservas(uid, id_estacionamento):
     return documento.id
 
 def _consultar_reservas_periodo(id_estacionamento, inicio, fim, agora):
+    avisos = {}
     rotulos = {
         "confirmadas": "Confirmadas",
         "concluidas": "Concluídas (status registrado)",
