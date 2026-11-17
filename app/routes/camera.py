@@ -28,38 +28,68 @@ def enviar_imagem_cloudinary(conteudo: bytes, nome: str) -> Optional[str]:
         return None
 
 def buscar_token_motorista(placa: str):
-    """Busca o token FCM e UID do motorista associado à placa do veículo."""
-    try:
-        placa_clean = placa.strip().upper().replace("-", "")
-        veiculo_doc = db.collection('veiculo').document(placa_clean).get()
-        
-        if not veiculo_doc.exists:
-            veiculo_doc = db.collection('veiculo').document(placa_clean.lower()).get()
+    """Busca o token FCM e UID do motorista associado à placa do veículo.
 
-        if not veiculo_doc.exists:
+    Procura pelo campo 'placa' (e fallbacks), não pelo ID do documento —
+    o seed e o app gravam o ID como auto-gerado e a placa em campo próprio.
+    """
+    try:
+        placa_clean = (placa or "").strip().upper().replace("-", "").replace(" ", "")
+        if not placa_clean:
+            return None, None
+
+        candidatos = [placa_clean, placa.strip()]
+        veiculo_doc = None
+
+        for candidato in candidatos:
+            doc = db.collection("veiculo").document(candidato).get()
+            if doc.exists:
+                veiculo_doc = doc
+                break
+
+        if veiculo_doc is None:
+            for campo in ("placa", "placaCarro", "carPlate"):
+                docs = list(
+                    db.collection("veiculo")
+                    .where(filter=FieldFilter(campo, "==", placa_clean))
+                    .limit(1)
+                    .stream()
+                )
+                if docs:
+                    veiculo_doc = docs[0]
+                    break
+
+        if veiculo_doc is None or not veiculo_doc.exists:
             print(f"Veículo {placa_clean} não encontrado no Firestore.")
             return None, None
 
-        veiculo_data = veiculo_doc.to_dict()
-        usuario_email = ( veiculo_data.get('usuarioEmail'))
-        
+        veiculo_data = veiculo_doc.to_dict() or {}
+
+        uid_direto = veiculo_data.get("usuarioId")
+        if uid_direto:
+            usuario_doc = db.collection("usuario").document(uid_direto).get()
+            if usuario_doc.exists:
+                usuario_data = usuario_doc.to_dict() or {}
+                return usuario_data.get("fcm_token"), usuario_doc.id
+
+        usuario_email = (veiculo_data.get("usuarioEmail") or "").strip()
         if not usuario_email:
+            print(f"Veículo {placa_clean} sem usuarioId nem usuarioEmail.")
             return None, None
 
-        usuario_email_clean = usuario_email.strip().lower()
-        usuarios_ref = db.collection('usuario').where(filter=FieldFilter('email', '==', usuario_email_clean)).limit(1).get()
-        
-        if not usuarios_ref:
-            usuarios_ref = db.collection('usuario').where(filter=FieldFilter('email', '==', usuario_email.strip())).limit(1).get()
+        for variante in (usuario_email.lower(), usuario_email):
+            docs = list(
+                db.collection("usuario")
+                .where(filter=FieldFilter("email", "==", variante))
+                .limit(1)
+                .stream()
+            )
+            if docs:
+                usuario_data = docs[0].to_dict() or {}
+                return usuario_data.get("fcm_token"), docs[0].id
 
-        if not usuarios_ref:
-            return None, None
-
-        usuario_doc = usuarios_ref[0]
-        usuario_data = usuario_doc.to_dict()
-        token = usuario_data.get('fcm_token')
-        
-        return token, usuario_doc.id
+        print(f"Usuário do veículo {placa_clean} não encontrado.")
+        return None, None
     except Exception as e:
         print(f"Erro ao buscar motorista: {e}")
         return None, None
