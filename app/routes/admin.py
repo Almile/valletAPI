@@ -130,24 +130,6 @@ def _autorizar_dashboard_reservas(uid, id_estacionamento):
             raise HTTPException(status_code=403, detail="Sem acesso a este estacionamento.")
     return documento.id
 
-
-def _consultar_horarios_periodo(id_estacionamento, inicio, fim):
-    # Sobreposição [inicio, fim): inclui reservas iniciadas antes do período.
-    consulta = (
-        database.collection("reserva")
-        .where(filter=FieldFilter("estacionamentoId", "==", id_estacionamento))
-        .where(filter=FieldFilter("fimReserva", ">", inicio.astimezone(timezone.utc)))
-        .where(filter=FieldFilter("inicioReserva", "<", fim.astimezone(timezone.utc)))
-        .order_by("fimReserva")
-        .order_by("inicioReserva")
-        .select(["inicioReserva", "fimReserva", "status"])
-    )
-    return contar_reservas_por_horario(
-        (documento.to_dict() or {} for documento in consulta.stream(retry=None, timeout=30)),
-        inicio, fim,
-    )
-
-
 def _consultar_reservas_periodo(id_estacionamento, inicio, fim, agora):
     rotulos = {
         "confirmadas": "Confirmadas",
@@ -161,7 +143,9 @@ def _consultar_reservas_periodo(id_estacionamento, inicio, fim, agora):
     contagens = dict.fromkeys(rotulos, 0)
     por_dia = OrderedDict()
     faturamento_por_dia = OrderedDict()
-    
+
+    por_horario = [0] * 24
+
     dia = inicio.date()
     while dia < fim.date():
         data_str = dia.isoformat()
@@ -177,7 +161,7 @@ def _consultar_reservas_periodo(id_estacionamento, inicio, fim, agora):
         .order_by("inicioReserva")
         .select(["inicioReserva", "fimReserva", "status", "valorTotal"])
     )
-    
+
     faturamento_total = 0.0
 
     for documento in consulta.stream(retry=None, timeout=30):
@@ -185,29 +169,31 @@ def _consultar_reservas_periodo(id_estacionamento, inicio, fim, agora):
         data = _data_dashboard(dados.get("inicioReserva"))
         if data is None or not inicio <= data < fim:
             continue
-            
+
         situacao = _situacao_dashboard(dados, agora)
         contagens[situacao] += 1
-        
+
         data_str = data.date().isoformat()
         linha = por_dia[data_str]
         linha["total"] += 1
         linha[situacao] += 1
 
-        # Acumula o faturamento da reserva (se houver valor registrado)
+        if situacao != "canceladas":
+            por_horario[data.hour] += 1
+
         valor_reserva = float(dados.get("valorTotal", 0.0) or 0.0)
         faturamento_total += valor_reserva
         if data_str in faturamento_por_dia:
             faturamento_por_dia[data_str] += valor_reserva
 
-    avisos = {}
-    try:
-        horarios = _consultar_horarios_periodo(id_estacionamento, inicio, fim)
-    except FailedPrecondition:
-        # A falta do índice novo não impede os demais gráficos e indicadores.
-        _logger.exception("[HORARIOS DE PICO] Confira o índice de reserva em firestore.indexes.json.")
-        horarios = None
-        avisos["horarios_pico"] = "Não foi possível consultar os horários de pico."
+    horarios = [
+        {
+            "hora": h,
+            "rotulo": f"{h:02d}h–{(h + 1) % 24:02d}h",
+            "total": por_horario[h],
+        }
+        for h in range(24)
+    ]
 
     return {
         "avisos": avisos,
@@ -236,6 +222,7 @@ def _consultar_reservas_periodo(id_estacionamento, inicio, fim, agora):
                 {"status": estado, "rotulo": rotulo, "total": contagens[estado]}
                 for estado, rotulo in rotulos.items()
             ],
+            "reservas_por_horario": horarios,
         },
         "criterios": {
             "horarios_pico": "Reservas não canceladas que cruzam cada faixa de uma hora, acumuladas por data no período; fim exclusivo. Horários inválidos ou incompletos ficam fora.",

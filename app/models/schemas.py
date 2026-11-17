@@ -125,25 +125,18 @@ class EstacionamentoBase(BaseModel):
     nome: str
     cnpj: str
     telefone: Optional[str] = ""
-    
     adminUid: str
-    
     endereco: Optional[Union[Endereco, str]] = None
-    
     quantidadeVagasTotal: Optional[int] = 0
     vagasDisponiveis: Optional[int] = 0
-    quantidadeVagasComum: Optional[int] = 0
-    quantidadeVagasIdosoPcd: Optional[int] = 0
-
-    possuiVagasPcd: bool = False
-    quantidadeVagasPcd: int = 0
-    possuiVagasIdoso: bool = False
-    quantidadeVagasIdoso: int = 0
-
-    tiposVagasComum: Optional[bool] = False
-    tiposVagasIdosoPcd: Optional[bool] = False
-    possuiCobertura: Optional[bool] = False
-    numeroPavimentos: Optional[int] = 1
+    quantidadeVagasCarro: Optional[int] = 0
+    quantidadeVagasMoto: Optional[int] = 0
+    quantidadeVagasPreferencial: Optional[int] = 0
+    possuiVagasMoto: bool = False
+    possuiVagasPreferencial: bool = False
+    tipoVagasCarro: Optional[bool] = False
+    tipoVagasMoto: Optional[bool] = False
+    tipoVagasPreferencial: Optional[bool] = False
 
     # Operação
     funciona24h: bool = Field(
@@ -252,14 +245,14 @@ class EstacionamentoUpdate(BaseModel):
     adminUid: Optional[str] = None
     endereco: Optional[Union[Endereco, str]] = None
     quantidadeVagasTotal: Optional[int] = Field(default=None, ge=1)
-    quantidadeVagasComum: Optional[int] = Field(default=None, ge=0)
-    quantidadeVagasIdosoPcd: Optional[int] = Field(default=None, ge=0)
-    tiposVagasComum: Optional[bool] = None
-    tiposVagasIdosoPcd: Optional[bool] = None
-    possuiVagasPcd: Optional[bool] = None
-    quantidadeVagasPcd: Optional[int] = Field(default=None, ge=0)
-    possuiVagasIdoso: Optional[bool] = None
-    quantidadeVagasIdoso: Optional[int] = Field(default=None, ge=0)
+    quantidadeVagasCarro: Optional[int] = Field(default=None, ge=0)
+    quantidadeVagasMoto: Optional[int] = Field(default=None, ge=0)
+    quantidadeVagasPreferencial: Optional[int] = Field(default=None, ge=0)
+    tipoVagasCarro: Optional[bool] = None
+    tipoVagasMoto: Optional[bool] = None
+    tipoVagasPreferencial: Optional[bool] = None
+    possuiVagasMoto: Optional[bool] = None
+    possuiVagasPreferencial: Optional[bool] = None
     valorHora: Optional[float] = Field(default=None, ge=0)
     funciona24h: Optional[bool] = None
     horarioAbertura: Optional[str] = None
