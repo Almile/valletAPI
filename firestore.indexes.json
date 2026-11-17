@@ -119,6 +119,24 @@
           "order": "DESCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "reserva",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "estacionamentoId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "fimReserva",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "inicioReserva",
+          "order": "ASCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": []

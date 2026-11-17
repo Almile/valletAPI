@@ -14,6 +14,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from app.valida_token import get_usuario_atual
 from app.core.firebase import db
 from app.core.agregacoes import contar, somar
+from app.core.horarios_pico import contar_reservas_por_horario
 from app.core.vagas_resumo import resumo_vagas_por_consulta
 
 router = APIRouter()
@@ -130,6 +131,23 @@ def _autorizar_dashboard_reservas(uid, id_estacionamento):
     return documento.id
 
 
+def _consultar_horarios_periodo(id_estacionamento, inicio, fim):
+    # Sobreposição [inicio, fim): inclui reservas iniciadas antes do período.
+    consulta = (
+        database.collection("reserva")
+        .where(filter=FieldFilter("estacionamentoId", "==", id_estacionamento))
+        .where(filter=FieldFilter("fimReserva", ">", inicio.astimezone(timezone.utc)))
+        .where(filter=FieldFilter("inicioReserva", "<", fim.astimezone(timezone.utc)))
+        .order_by("fimReserva")
+        .order_by("inicioReserva")
+        .select(["inicioReserva", "fimReserva", "status"])
+    )
+    return contar_reservas_por_horario(
+        (documento.to_dict() or {} for documento in consulta.stream(retry=None, timeout=30)),
+        inicio, fim,
+    )
+
+
 def _consultar_reservas_periodo(id_estacionamento, inicio, fim, agora):
     rotulos = {
         "confirmadas": "Confirmadas",
@@ -182,7 +200,17 @@ def _consultar_reservas_periodo(id_estacionamento, inicio, fim, agora):
         if data_str in faturamento_por_dia:
             faturamento_por_dia[data_str] += valor_reserva
 
+    avisos = {}
+    try:
+        horarios = _consultar_horarios_periodo(id_estacionamento, inicio, fim)
+    except FailedPrecondition:
+        # A falta do índice novo não impede os demais gráficos e indicadores.
+        _logger.exception("[HORARIOS DE PICO] Confira o índice de reserva em firestore.indexes.json.")
+        horarios = None
+        avisos["horarios_pico"] = "Não foi possível consultar os horários de pico."
+
     return {
+        "avisos": avisos,
         "id_estacionamento": id_estacionamento,
         "periodo": {
             "inicio": inicio.date().isoformat(),
@@ -197,6 +225,7 @@ def _consultar_reservas_periodo(id_estacionamento, inicio, fim, agora):
             **contagens
         },
         "graficos": {
+            "reservas_por_horario": horarios,
             "reservas_por_dia": [
                 {"data": data, **contagem} for data, contagem in por_dia.items()
             ],
@@ -209,6 +238,7 @@ def _consultar_reservas_periodo(id_estacionamento, inicio, fim, agora):
             ],
         },
         "criterios": {
+            "horarios_pico": "Reservas não canceladas que cruzam cada faixa de uma hora, acumuladas por data no período; fim exclusivo. Horários inválidos ou incompletos ficam fora.",
             "confirmadas": "Ativas, agendadas ou confirmadas com horário ainda válido.",
             "concluidas": "Status concluida ou finalizada; pagamento ainda não validado.",
             "horario_encerrado": "Horário encerrado com status ativo, sem alterar a reserva.",
