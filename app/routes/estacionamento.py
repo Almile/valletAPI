@@ -27,17 +27,28 @@ geolocator = Nominatim(user_agent="vallet_projeto_app")
 CAMPOS_RESUMO_VAGAS = (
     "quantidadeVagasTotal",
     "vagasDisponiveis",
-    "quantidadeVagasComum",
-    "quantidadeVagasIdosoPcd",
-    "tiposVagasComum",
-    "tiposVagasIdosoPcd",
+    "quantidadeVagasCarro",
+    "quantidadeVagasMoto",
+    "quantidadeVagasPreferencial",
+    "possuiVagasMoto",
+    "possuiVagasPreferencial",
+    "tipoVagasCarro",
+    "tipoVagasMoto",
+    "tipoVagasPreferencial",
 )
 
 
 def atualizar_resumo_resposta(dados, estacionamento_id):
     """Inclui o resumo de vagas sem consultar a coleção em toda listagem.
     """
-    if all(dados.get(campo) is not None for campo in CAMPOS_RESUMO_VAGAS):
+    resumo_completo = all(dados.get(campo) is not None for campo in CAMPOS_RESUMO_VAGAS)
+    presencas_consistentes = (
+        dados.get("possuiVagasMoto")
+        == ((dados.get("quantidadeVagasMoto") or 0) > 0)
+        and dados.get("possuiVagasPreferencial")
+        == ((dados.get("quantidadeVagasPreferencial") or 0) > 0)
+    )
+    if resumo_completo and presencas_consistentes:
         return dados
 
     resumo = resumo_vagas_por_consulta(estacionamento_id)

@@ -7,18 +7,26 @@ from app.core.firebase import db
 database = db
 
 
-def _montar_resumo(total: int, disponiveis: int, preferenciais: int) -> dict:
+def _montar_resumo(
+    total: int, disponiveis: int, preferenciais: int, motos: int
+) -> dict:
     total = max(0, int(total))
     disponiveis = max(0, min(total, int(disponiveis)))
     preferenciais = max(0, min(total, int(preferenciais)))
+    motos = max(0, min(total, int(motos)))
+    carros = total - motos
 
     return {
         "quantidadeVagasTotal": total,
         "vagasDisponiveis": disponiveis,
-        "quantidadeVagasComum": total - preferenciais,
-        "quantidadeVagasIdosoPcd": preferenciais,
-        "tiposVagasComum": total > preferenciais,
-        "tiposVagasIdosoPcd": preferenciais > 0,
+        "quantidadeVagasCarro": carros,
+        "quantidadeVagasMoto": motos,
+        "quantidadeVagasPreferencial": preferenciais,
+        "possuiVagasMoto": motos > 0,
+        "possuiVagasPreferencial": preferenciais > 0,
+        "tipoVagasCarro": carros > 0,
+        "tipoVagasMoto": motos > 0,
+        "tipoVagasPreferencial": preferenciais > 0,
     }
 
 
@@ -27,12 +35,15 @@ def resumo_vagas(vagas) -> dict:
     vagas = list(vagas)
     total = len(vagas)
     disponiveis = sum(1 for vaga in vagas if vaga.get("disponivel", True))
+    motos = sum(
+        1 for vaga in vagas if str(vaga.get("tipo", "carro")).casefold() == "moto"
+    )
     preferenciais = sum(
         1
         for vaga in vagas
         if vaga.get("preferencial") or vaga.get("tipo") == "IdosoPcd"
     )
-    return _montar_resumo(total, disponiveis, preferenciais)
+    return _montar_resumo(total, disponiveis, preferenciais, motos)
 
 
 def _contar(consulta) -> int:
@@ -54,6 +65,9 @@ def resumo_vagas_por_consulta(estacionamento_id: str) -> dict:
     indisponiveis = _contar(
         do_estacionamento.where(filter=FieldFilter("disponivel", "==", False))
     )
+    motos = _contar(
+        do_estacionamento.where(filter=FieldFilter("tipo", "==", "moto"))
+    )
     preferencial_true = _contar(
         do_estacionamento.where(filter=FieldFilter("preferencial", "==", True))
     )
@@ -67,7 +81,7 @@ def resumo_vagas_por_consulta(estacionamento_id: str) -> dict:
     )
 
     preferenciais = preferencial_true + tipo_idoso - ambos
-    return _montar_resumo(total, total - indisponiveis, preferenciais)
+    return _montar_resumo(total, total - indisponiveis, preferenciais, motos)
 
 
 def atualizar_resumo_estacionamento(estacionamento_id: str):

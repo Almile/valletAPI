@@ -14,6 +14,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from app.valida_token import get_usuario_atual
 from app.core.firebase import db
 from app.core.agregacoes import contar, somar
+from app.core.horarios_pico import contar_reservas_por_horario
 from app.core.vagas_resumo import resumo_vagas_por_consulta
 
 router = APIRouter()
@@ -128,6 +129,7 @@ def _autorizar_dashboard_reservas(uid, id_estacionamento):
     return documento.id
 
 def _consultar_reservas_periodo(id_estacionamento, inicio, fim, agora):
+    avisos = {}
     rotulos = {
         "confirmadas": "Confirmadas",
         "concluidas": "Concluídas (status registrado)",
@@ -193,6 +195,7 @@ def _consultar_reservas_periodo(id_estacionamento, inicio, fim, agora):
     ]
 
     return {
+        "avisos": avisos,
         "id_estacionamento": id_estacionamento,
         "periodo": {
             "inicio": inicio.date().isoformat(),
@@ -207,6 +210,7 @@ def _consultar_reservas_periodo(id_estacionamento, inicio, fim, agora):
             **contagens
         },
         "graficos": {
+            "reservas_por_horario": horarios,
             "reservas_por_dia": [
                 {"data": data, **contagem} for data, contagem in por_dia.items()
             ],
@@ -220,6 +224,7 @@ def _consultar_reservas_periodo(id_estacionamento, inicio, fim, agora):
             "reservas_por_horario": horarios,
         },
         "criterios": {
+            "horarios_pico": "Reservas não canceladas que cruzam cada faixa de uma hora, acumuladas por data no período; fim exclusivo. Horários inválidos ou incompletos ficam fora.",
             "confirmadas": "Ativas, agendadas ou confirmadas com horário ainda válido.",
             "concluidas": "Status concluida ou finalizada; pagamento ainda não validado.",
             "horario_encerrado": "Horário encerrado com status ativo, sem alterar a reserva.",
